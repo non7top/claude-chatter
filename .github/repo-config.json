@@ -1,0 +1,181 @@
+{
+  "x-comment-repo": "https://docs.github.com/en/rest/repos/repos#update-a-repository",
+  "repo": {
+    "allow_auto_merge": false,
+    "allow_merge_commit": true,
+    "allow_rebase_merge": false,
+    "allow_squash_merge": false,
+    "allow_update_branch": false,
+    "default_branch": "master",
+    "delete_branch_on_merge": false,
+    "description": "Generic peer messaging and session protocol library for Claude Code",
+    "has_discussions": false,
+    "has_issues": true,
+    "has_projects": false,
+    "has_wiki": false,
+    "merge_commit_message": "PR_TITLE",
+    "merge_commit_title": "MERGE_MESSAGE",
+    "security_and_analysis": {
+      "dependabot_security_updates": {
+        "status": "enabled"
+      },
+      "secret_scanning": {
+        "status": "disabled"
+      },
+      "secret_scanning_push_protection": {
+        "status": "disabled"
+      },
+      "secret_scanning_non_provider_patterns": {
+        "status": "disabled"
+      },
+      "secret_scanning_validity_checks": {
+        "status": "disabled"
+      }
+    },
+    "squash_merge_commit_message": "COMMIT_MESSAGES",
+    "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+    "web_commit_signoff_required": false
+  },
+  "x-comment-topics": "https://docs.github.com/en/rest/repos/repos#replace-all-repository-topics",
+  "topics": {
+    "names": [
+      "claude-code",
+      "ipc",
+      "unix-domain-sockets",
+      "peer-messaging",
+      "python"
+    ]
+  },
+  "x-comment-branch_protection": "https://docs.github.com/en/rest/branches/branch-protection#update-branch-protection",
+  "branch_protection": {},
+  "x-comment-rulesets": "https://docs.github.com/en/rest/repos/rules#update-a-repository-ruleset",
+  "rulesets": [
+    {
+      "name": "require-pr-to-master",
+      "target": "branch",
+      "enforcement": "active",
+      "bypass_actors": [],
+      "conditions": {
+        "ref_name": {
+          "exclude": [],
+          "include": [
+            "refs/heads/master"
+          ]
+        }
+      },
+      "rules": [
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": false,
+            "required_reviewers": [],
+            "require_code_owner_review": false,
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": false,
+            "require_extra_approval_for_unattributed_changes": true,
+            "allowed_merge_methods": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          }
+        },
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        }
+      ]
+    }
+  ],
+  "x-comment-labels": "https://docs.github.com/en/rest/issues/labels",
+  "labels": [
+    {
+      "name": "autorelease: pending",
+      "color": "ededed",
+      "description": ""
+    },
+    {
+      "name": "autorelease: tagged",
+      "color": "ededed",
+      "description": ""
+    },
+    {
+      "name": "bug",
+      "color": "d73a4a",
+      "description": "Something isn't working"
+    },
+    {
+      "name": "dependencies",
+      "color": "0366d6",
+      "description": "Pull requests that update a dependency file"
+    },
+    {
+      "name": "documentation",
+      "color": "0075ca",
+      "description": "Improvements or additions to documentation"
+    },
+    {
+      "name": "duplicate",
+      "color": "cfd3d7",
+      "description": "This issue or pull request already exists"
+    },
+    {
+      "name": "enhancement",
+      "color": "a2eeef",
+      "description": "New feature or request"
+    },
+    {
+      "name": "github_actions",
+      "color": "000000",
+      "description": "Pull requests that update GitHub Actions code"
+    },
+    {
+      "name": "good first issue",
+      "color": "7057ff",
+      "description": "Good for newcomers"
+    },
+    {
+      "name": "help wanted",
+      "color": "008672",
+      "description": "Extra attention is needed"
+    },
+    {
+      "name": "invalid",
+      "color": "e4e669",
+      "description": "This doesn't seem right"
+    },
+    {
+      "name": "question",
+      "color": "d876e3",
+      "description": "Further information is requested"
+    },
+    {
+      "name": "RELEASE",
+      "color": "FF0000",
+      "description": ""
+    },
+    {
+      "name": "wontfix",
+      "color": "ffffff",
+      "description": "This will not be worked on"
+    }
+  ],
+  "x-comment-environments": "https://docs.github.com/en/rest/deployments/environments#create-or-update-an-environment",
+  "environments": {},
+  "x-comment-actions": "https://docs.github.com/en/rest/actions/permissions",
+  "actions": {
+    "permissions": {
+      "enabled": true,
+      "allowed_actions": "all"
+    },
+    "workflow": {
+      "default_workflow_permissions": "read",
+      "can_approve_pull_request_reviews": true
+    }
+  },
+  "x-comment-vulnerability_alerts": "https://docs.github.com/en/rest/repos/repos#enable-vulnerability-alerts",
+  "vulnerability_alerts": true
+}

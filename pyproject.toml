@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-chatter"
+version = "0.1.0"
+description = "Claude Code peer messaging protocol and client library."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "flake8>=6.0.0",
+    "build>=1.0.0",
+]
+
+[project.scripts]
+claude-chatter = "claude_chatter.cli:main"
+chatter = "claude_chatter.cli:main"
+
+[tool.setuptools]
+packages = ["claude_chatter"]
