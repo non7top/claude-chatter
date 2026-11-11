@@ -1,6 +1,5 @@
 """
-CLI entry point: argument parsing and mode dispatch. Thin - all real behavior
-lives in protocol.py / mcp_server.py / standalone.py.
+CLI entry point for claude-chatter: argument parsing and mode dispatch.
 """
 import os
 import sys
@@ -10,19 +9,18 @@ import logging
 import argparse
 from logging.handlers import RotatingFileHandler
 
-from .protocol import ClaudeMessagingProtocol
-from .standalone import run_standalone
-# mcp_server pulls in fastmcp, which only the default (MCP stdio) mode needs -
-# import it lazily so --list/--send/--purge/--standalone don't pay that cost.
+if __package__:
+    from .client import ClaudeClient
+    from .standalone import run_standalone
+else:
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from claude_chatter.client import ClaudeClient
+    from claude_chatter.standalone import run_standalone
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] [pid=%(process)d] %(message)s"
 _log_handlers = [logging.StreamHandler(sys.stderr)]
 try:
-    # A host-spawned bridge (uvx via Antigravity) has no persistent stderr to
-    # read after the fact - a real log file is the difference between "catch
-    # it live with strace" and "just read what happened." Shared across all
-    # bridge processes/workspaces; pid in the format string disambiguates
-    # interleaved lines. Rotated to bound growth on a long-lived daemon.
     _log_dir = os.path.expanduser("~/.claude/logs")
     os.makedirs(_log_dir, exist_ok=True)
     _log_handlers.append(
@@ -33,63 +31,51 @@ try:
         )
     )
 except OSError:
-    pass  # fall back to stderr-only rather than fail the whole process over logging
+    pass
 
 logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, handlers=_log_handlers)
-logger = logging.getLogger("SocketBridgeMCP")
+logger = logging.getLogger("claude_chatter")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Claude Bridge MCP Server & Standalone CLI Tool")
+    parser = argparse.ArgumentParser(description="Claude Code peer messaging protocol and client CLI tool")
     parser.add_argument("--socket", type=str, default=None, help="Path to bridge Unix socket")
-    parser.add_argument("--name", type=str, default=None, help="Session name announced to Claude Code (default: derived from cwd, stable across restarts)")
+    parser.add_argument("--name", type=str, default=None, help="Session name announced to Claude Code (default: derived from cwd)")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database for message persistence")
+    parser.add_argument("--project-path", type=str, default=None, help="Explicit project directory path")
 
     mode_group = parser.add_argument_group("Execution Modes")
-    mode_group.add_argument("--standalone", "--daemon", action="store_true", help="Run as standalone daemon server without stdio MCP loop")
+    mode_group.add_argument("--standalone", "--daemon", action="store_true", help="Run as standalone daemon listener")
     mode_group.add_argument("--list", action="store_true", help="List all active Claude Code sessions")
-    mode_group.add_argument("--jobs", action="store_true", help="List Claude Code background jobs (including finished ones) from ~/.claude/jobs")
+    mode_group.add_argument("--jobs", action="store_true", help="List Claude Code background jobs from ~/.claude/jobs")
     mode_group.add_argument("--inbox", action="store_true", help="List unread inbound messages from persisted inbox")
     mode_group.add_argument("--history", action="store_true", help="List full persisted message history")
     mode_group.add_argument("--send", nargs=2, metavar=("SESSION", "MESSAGE"), help="Send message to target Claude Code session")
-    mode_group.add_argument("--prime", action="store_true", help="From an Antigravity shell tool: hand this agy's push endpoint to its bridge so it can wake the session on inbound messages")
-    mode_group.add_argument("--prime-hook", action="store_true", help="Antigravity PreInvocation hook: reads hook JSON on stdin and prints the JSON that makes the session prime push (see --prime)")
     mode_group.add_argument("--purge", action="store_true", help="Proactively scan and purge dead session files")
 
     args = parser.parse_args()
 
-    if args.prime_hook:
-        from .hook import run
-        print(run(sys.stdin.read()))
-        sys.exit(0)
-
-    elif args.prime:
-        from .prime import prime_from_shell
-        result = prime_from_shell()
-        print(json.dumps(result, indent=2))
-        sys.exit(0 if result.get("ok") else 1)
-
-    elif args.list:
-        protocol = ClaudeMessagingProtocol(bridge_socket_path=args.socket, session_name=args.name, enable_storage=False, as_bridge=False)
+    if args.list:
+        client = ClaudeClient(bridge_socket_path=args.socket, session_name=args.name, enable_storage=False, as_bridge=False, project_path=args.project_path)
 
         async def _cmd_list():
-            peers = await protocol.verify_and_purge_sessions()
-            print(json.dumps(protocol.redact_peers(peers), indent=2))
+            peers = await client.verify_and_purge_sessions()
+            print(json.dumps(client.redact_peers(peers), indent=2))
         asyncio.run(_cmd_list())
         sys.exit(0)
 
     elif args.jobs:
         from .jobs import list_jobs
-        protocol = ClaudeMessagingProtocol(bridge_socket_path=args.socket, session_name=args.name, enable_storage=False, as_bridge=False)
+        client = ClaudeClient(bridge_socket_path=args.socket, session_name=args.name, enable_storage=False, as_bridge=False, project_path=args.project_path)
 
         async def _cmd_jobs():
-            peers = await protocol.verify_and_purge_sessions()
+            peers = await client.verify_and_purge_sessions()
             print(json.dumps(list_jobs(live_sessions=peers), indent=2))
         asyncio.run(_cmd_jobs())
         sys.exit(0)
 
     elif args.inbox:
-        target_name = ClaudeMessagingProtocol.resolve_session_name(args.name, db_path=args.db)
+        target_name = ClaudeClient.resolve_session_name(args.name, project_path=args.project_path, db_path=args.db)
         if not target_name:
             print(json.dumps({}, indent=2))
             sys.exit(0)
@@ -110,7 +96,7 @@ def main():
         sys.exit(0)
 
     elif args.history:
-        target_name = ClaudeMessagingProtocol.resolve_session_name(args.name, db_path=args.db)
+        target_name = ClaudeClient.resolve_session_name(args.name, project_path=args.project_path, db_path=args.db)
         if not target_name:
             print(json.dumps({}, indent=2))
             sys.exit(0)
@@ -127,21 +113,21 @@ def main():
         sys.exit(0)
 
     elif args.purge:
-        protocol = ClaudeMessagingProtocol(bridge_socket_path=args.socket, session_name=args.name, enable_storage=False, as_bridge=False)
+        client = ClaudeClient(bridge_socket_path=args.socket, session_name=args.name, enable_storage=False, as_bridge=False, project_path=args.project_path)
 
         async def _cmd_purge():
-            peers = await protocol.verify_and_purge_sessions()
+            peers = await client.verify_and_purge_sessions()
             print(f"Purge scan completed. Active sessions remaining: {len(peers)}")
         asyncio.run(_cmd_purge())
         sys.exit(0)
 
     elif args.send:
-        protocol = ClaudeMessagingProtocol(bridge_socket_path=args.socket, session_name=args.name, enable_storage=False, as_bridge=False)
+        client = ClaudeClient(bridge_socket_path=args.socket, session_name=args.name, enable_storage=False, as_bridge=False, project_path=args.project_path)
         target_session, message_text = args.send[0], args.send[1]
 
         async def _cmd_send():
-            res = await protocol.send_to_claude(
-                session_identifier=target_session,
+            res = await client.send_message(
+                target_session=target_session,
                 message_content=message_text
             )
             print(json.dumps(res, indent=2))
@@ -151,25 +137,18 @@ def main():
         sys.exit(0)
 
     elif args.standalone:
-        protocol = ClaudeMessagingProtocol(bridge_socket_path=args.socket, session_name=args.name, db_path=args.db, as_bridge=True)
+        client = ClaudeClient(bridge_socket_path=args.socket, session_name=args.name, db_path=args.db, as_bridge=True, project_path=args.project_path)
         try:
-            asyncio.run(run_standalone(protocol))
+            asyncio.run(run_standalone(client))
         except (KeyboardInterrupt, SystemExit):
-            logger.info("Shutting down standalone bridge daemon gracefully.")
+            logger.info("Shutting down standalone daemon gracefully.")
         except Exception as e:
             logger.error(f"Fatal standalone server error: {e}")
             sys.exit(0)
 
     else:
-        from .mcp_server import run_mcp_server, make_protocol
-        protocol = make_protocol(args.socket, args.name, db_path=args.db)
-        try:
-            asyncio.run(run_mcp_server(protocol))
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("Shutting down bridge daemon gracefully.")
-        except Exception as e:
-            logger.error(f"Fatal server error: {e}")
-            sys.exit(0)
+        parser.print_help()
+        sys.exit(0)
 
 
 if __name__ == "__main__":

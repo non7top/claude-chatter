@@ -1,20 +1,19 @@
 """
 Standalone daemon entry point: an explicit, user-invoked long-lived process
 (tied to whatever TTY, process manager, or supervisor the user chooses to run
-it under - nothing auto-spawns it). Runs the socket listener without any MCP
-stdio loop.
+it under - nothing auto-spawns it). Runs the socket listener loop.
 """
 import asyncio
 import logging
 import signal
 
-from .protocol import ClaudeMessagingProtocol
+from .client import ClaudeClient
 
-logger = logging.getLogger("SocketBridgeMCP")
+logger = logging.getLogger("claude_chatter")
 
 
-async def run_standalone(protocol: ClaudeMessagingProtocol):
-    protocol.register_session_descriptor(session_name=protocol.session_name, kind="bg")
+async def run_standalone(client: ClaudeClient):
+    client.register_session_descriptor(session_name=client.session_name, kind="bg")
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -29,7 +28,7 @@ async def run_standalone(protocol: ClaudeMessagingProtocol):
         except (NotImplementedError, RuntimeError):
             pass
 
-    listener_task = asyncio.create_task(protocol.start_bridge_listener())
+    listener_task = asyncio.create_task(client.start_bridge_listener())
     stop_task = asyncio.create_task(stop_event.wait())
 
     done, pending = await asyncio.wait(
@@ -44,6 +43,6 @@ async def run_standalone(protocol: ClaudeMessagingProtocol):
         except (asyncio.CancelledError, Exception):
             pass
 
-    protocol.cleanup_session_descriptor()
-    protocol.cleanup_socket()
-    logger.info("Bridge standalone daemon shut down gracefully.")
+    client.cleanup_session_descriptor()
+    client.cleanup_socket()
+    logger.info("Standalone daemon shut down gracefully.")

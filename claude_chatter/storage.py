@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger("SocketBridgeMCP")
+logger = logging.getLogger("claude_chatter")
 
 SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS sessions (
