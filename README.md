@@ -12,6 +12,15 @@ This library has no dependencies on FastMCP or Antigravity and can be used direc
 pip install claude-chatter
 ```
 
+## Messaging tools
+
+The library implements the peer messaging tools that Claude Code exposes to its own agents (`SendMessage` and `ListAgents`), so any Python program can act as a peer:
+
+- `ClaudeClient.send_message(target_session, message_content, priority="next")` delivers a message to a live session over its UNIX socket. The target is resolved by name, PID, session id or a partial name match.
+- `ClaudeClient.list_sessions()` returns the live sessions found in `~/.claude/sessions`, with peer tokens redacted unless `redact_tokens=False`. `ClaudeWire.scan_sessions()` does the same without a client.
+
+Received messages are stored in the local mailbox and read with `get_unread_messages()` and `get_history()`. The CLI equivalents are `--send`, `--list`, `--inbox` and `--history`.
+
 ## Quick Start
 
 ### As a Library
