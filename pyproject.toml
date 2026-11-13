@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-chatter"
-version = "0.2.1"
+version = "0.2.2"
 description = "Claude Code peer messaging protocol and client library."
 readme = "README.md"
 license = "MIT"
