@@ -29,6 +29,9 @@ logger = logging.getLogger("claude_chatter")
 
 
 class ClaudeClient:
+    # Covers the documented ~1M-character message cap even when JSON-escaped to 6 bytes per character.
+    MAX_FRAME_BYTES = 8 * 1024 * 1024
+
     def __init__(
         self,
         bridge_socket_path: Optional[str] = None,
@@ -588,7 +591,11 @@ class ClaudeClient:
     async def handle_inbound_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
             while not reader.at_eof():
-                line = await reader.readline()
+                try:
+                    line = await reader.readline()
+                except ValueError:
+                    logger.error(f"Inbound frame exceeds {self.MAX_FRAME_BYTES} bytes; closing connection")
+                    break
                 if not line:
                     break
                 line_str = line.decode("utf-8").strip()
@@ -765,7 +772,7 @@ class ClaudeClient:
 
         try:
             server = await asyncio.start_unix_server(
-                self.handle_inbound_client, self.bridge_socket_path
+                self.handle_inbound_client, self.bridge_socket_path, limit=self.MAX_FRAME_BYTES
             )
             os.chmod(self.bridge_socket_path, stat.S_IRUSR | stat.S_IWUSR)
             logger.info(f"Bridge server operational on: {self.bridge_socket_path}")

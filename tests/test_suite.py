@@ -1387,6 +1387,57 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+    async def _post_frames(self, frames):
+        """Sends each frame on its own connection, tolerating the server dropping an oversized one."""
+        for frame in frames:
+            reader, writer = await asyncio.open_unix_connection(self.socket_path)
+            try:
+                writer.write((json.dumps(frame) + "\n").encode("utf-8"))
+                await writer.drain()
+                await asyncio.sleep(0.3)
+                writer.close()
+                await writer.wait_closed()
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+
+    @staticmethod
+    def _frame(msg_id, size):
+        return {"msgV": 1, "msg_id": msg_id, "type": "user",
+                "message": {"role": "user", "content": "x" * size}}
+
+    async def test_inbound_frames_above_64kib_are_stored_whole(self):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+
+        await self._post_frames([self._frame("big-100k", 100_000), self._frame("big-900k", 900_000)])
+
+        self.assertEqual(len(self.bridge.response_store["big-100k"]["content"]), 100_000)
+        self.assertEqual(len(self.bridge.response_store["big-900k"]["content"]), 900_000)
+
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_frame_over_the_cap_is_dropped_and_listener_keeps_serving(self):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+
+        await self._post_frames([
+            self._frame("too-big", ClaudeClient.MAX_FRAME_BYTES + 1000),
+            self._frame("after", 100),
+        ])
+
+        self.assertNotIn("too-big", self.bridge.response_store)
+        self.assertIn("after", self.bridge.response_store)
+
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
     async def test_outbound_send_to_mock_peer(self):
         """Verify outbound frame formatting and delivery over target Unix domain socket."""
         mock_sock_path = os.path.join(self.tmp_dir.name, "mock_target.sock")
