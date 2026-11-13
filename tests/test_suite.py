@@ -1292,6 +1292,8 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         os.environ["CHATTER_DB_PATH"] = self.db_path
         self.socket_path = os.path.join(self.tmp_dir.name, "test_ipc.sock")
         self.bridge = ClaudeMessagingProtocol(bridge_socket_path=self.socket_path, db_path=self.db_path)
+        self.bridge.sessions_dir = os.path.join(self.tmp_dir.name, "sessions")
+        os.makedirs(self.bridge.sessions_dir)
 
     async def asyncTearDown(self):
         self.bridge.cleanup_session_descriptor()
@@ -1301,6 +1303,90 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         else:
             os.environ.pop("CHATTER_DB_PATH", None)
         self.tmp_dir.cleanup()
+
+    def _register_session(self, pid, name):
+        with open(os.path.join(self.bridge.sessions_dir, f"{pid}.json"), "w", encoding="utf-8") as f:
+            json.dump({"pid": pid, "name": name, "messagingSocketPath": "/sock/x", "sessionId": f"sid-{pid}"}, f)
+
+    @staticmethod
+    def _claiming_frame(msg_id, claimed, from_mode=None):
+        content = "hi"
+        if from_mode:
+            content = (f'<cross-session-message from="uds:/claimed" from-name="{claimed}" '
+                       f'from-mode="{from_mode}">\nhi\n</cross-session-message>')
+        return {"msgV": 1, "msg_id": msg_id, "type": "user",
+                "message": {"role": "user", "content": content}, "sender": claimed}
+
+    async def _listen_and_post(self, frame):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        reader, writer = await asyncio.open_unix_connection(self.socket_path)
+        writer.write((json.dumps(frame) + "\n").encode("utf-8"))
+        await writer.drain()
+        await asyncio.sleep(0.3)
+        writer.close()
+        await writer.wait_closed()
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_sender_without_matching_session_is_marked_unverified(self):
+        await self._listen_and_post(self._claiming_frame("m1", "spoof"))
+
+        entry = self.bridge.response_store["m1"]
+        self.assertEqual(entry["sender"], "spoof")
+        self.assertEqual(entry["claimed_sender"], "spoof")
+        self.assertFalse(entry["sender_verified"])
+        self.assertEqual(entry["peer_pid"], os.getpid())
+
+    async def test_sender_is_the_session_owning_the_connecting_pid(self):
+        self._register_session(os.getpid(), "real-session")
+
+        await self._listen_and_post(self._claiming_frame("m2", "spoof"))
+
+        entry = self.bridge.response_store["m2"]
+        self.assertEqual(entry["sender"], "real-session")
+        self.assertEqual(entry["claimed_sender"], "spoof")
+        self.assertTrue(entry["sender_verified"])
+
+    async def test_sender_is_the_session_whose_child_process_connected(self):
+        self._register_session(os.getpid(), "real-session")
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        code = (
+            "import json, socket, sys, time\n"
+            "s = socket.socket(socket.AF_UNIX)\n"
+            "s.connect(sys.argv[1])\n"
+            "frame = {'msg_id': 'm3', 'type': 'user', 'sender': 'spoof',\n"
+            "         'message': {'role': 'user', 'content': 'hi'}}\n"
+            "s.sendall((json.dumps(frame) + '\\n').encode())\n"
+            "time.sleep(0.5)\n"
+        )
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", code, self.socket_path)
+        await proc.wait()
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+        entry = self.bridge.response_store["m3"]
+        self.assertEqual(entry["sender"], "real-session")
+        self.assertTrue(entry["sender_verified"])
+        self.assertNotEqual(entry["peer_pid"], os.getpid())
+
+    async def test_wrapper_from_mode_is_recorded(self):
+        await self._listen_and_post(self._claiming_frame("m4", "someone", from_mode="bypass"))
+        await asyncio.sleep(0)
+
+        self.assertEqual(self.bridge.response_store["m4"]["from_mode"], "bypass")
+
+    async def test_from_mode_is_none_without_a_wrapper(self):
+        await self._listen_and_post(self._claiming_frame("m5", "someone"))
+
+        self.assertIsNone(self.bridge.response_store["m5"]["from_mode"])
 
     async def test_inbound_listener_and_buffering(self):
         """Verify inbound Unix socket listener receives and buffers peer frames."""

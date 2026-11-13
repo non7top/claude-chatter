@@ -597,6 +597,11 @@ class ClaudeClient:
 
     async def handle_inbound_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
+            peer_pid = ClaudeWire.peer_pid(writer.get_extra_info("socket"))
+            peer_session = None
+            if peer_pid:
+                peer_session = ClaudeWire.match_session_by_pid(peer_pid, ClaudeWire.scan_sessions(self.sessions_dir))
+
             while not reader.at_eof():
                 try:
                     line = await reader.readline()
@@ -626,6 +631,7 @@ class ClaudeClient:
                         content_val = payload.get("content", str(msg_obj))
 
                     sender = payload.get("sender")
+                    from_mode = None
                     wrapper_match = re.match(
                         r'^<cross-session-message\s+([^>]*)>\n(.*)\n</cross-session-message>$',
                         content_val, re.DOTALL
@@ -635,17 +641,31 @@ class ClaudeClient:
                         if sender is None:
                             name_match = re.search(r'from-name="([^"]*)"', attrs)
                             sender = name_match.group(1) if name_match else payload.get("from", "unknown")
+                        mode_match = re.search(r'from-mode="([^"]*)"', attrs)
+                        from_mode = mode_match.group(1) if mode_match else None
                         content_val = inner_text
                     if sender is None:
                         sender = payload.get("from", "unknown")
 
+                    claimed_sender = sender
+                    sender_verified = peer_session is not None
+                    if sender_verified:
+                        sender = peer_session["name"]
+
                     now = time.time()
+                    provenance = {
+                        "claimed_sender": claimed_sender,
+                        "sender_verified": sender_verified,
+                        "peer_pid": peer_pid,
+                        "from_mode": from_mode,
+                    }
                     event = {
                         "msg_id": msg_id,
                         "sender": sender,
                         "content": content_val,
                         "timestamp": now,
-                        "payload": payload
+                        "payload": payload,
+                        **provenance,
                     }
 
                     self.response_store[msg_id] = {
@@ -655,7 +675,8 @@ class ClaudeClient:
                         "sender": sender,
                         "content": content_val,
                         "payload": payload,
-                        "timestamp": now
+                        "timestamp": now,
+                        **provenance,
                     }
                     logger.info(f"Buffered inbound response frame: {msg_id}")
 

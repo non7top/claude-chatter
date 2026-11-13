@@ -13,6 +13,8 @@ import time
 import uuid
 import asyncio
 import logging
+import socket
+import struct
 from collections import Counter
 from typing import Any, Dict, Iterable, Optional, Tuple
 
@@ -68,6 +70,32 @@ class ClaudeWire:
         """True for a descriptor whose PID belongs to another PID namespace or machine."""
         domain = meta.get("pidDomain")
         return bool(local_domain and domain and domain != local_domain)
+
+    @staticmethod
+    def peer_pid(sock: Any) -> Optional[int]:
+        """PID of the process on the other end of a connected unix socket (Linux SO_PEERCRED), else None."""
+        option = getattr(socket, "SO_PEERCRED", None)
+        if sock is None or option is None:
+            return None
+        try:
+            pid, _uid, _gid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, option, struct.calcsize("3i")))
+        except (OSError, struct.error):
+            return None
+        return pid or None
+
+    @staticmethod
+    def match_session_by_pid(pid: int, sessions: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """The live session that is, or is an ancestor of, the given process."""
+        by_pid = {s["pid"]: s for s in sessions.values()}
+        if pid in by_pid:
+            return by_pid[pid]
+        try:
+            for parent in psutil.Process(pid).parents():
+                if parent.pid in by_pid:
+                    return by_pid[parent.pid]
+        except psutil.Error:
+            pass
+        return None
 
     @staticmethod
     def index_peers(peers: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
