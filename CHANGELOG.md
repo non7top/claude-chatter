@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/non7top/claude-chatter/compare/v0.2.0...v0.2.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **packaging:** prepare PyPI release (metadata, README tools, publish workflow) ([fee34ef](https://github.com/non7top/claude-chatter/commit/fee34ef8bc46c145a6485b8d98a11e44773948f5))
+
 ## [0.2.0](https://github.com/non7top/claude-chatter/compare/v0.1.0...v0.2.0) (2026-11-11)
 
 
