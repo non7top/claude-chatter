@@ -30,6 +30,7 @@ os.environ["PYTHONPATH"] = f"{_repo_dir}:{_curr_pythonpath}" if _curr_pythonpath
 from claude_chatter import (
     ClaudeClient,
     ClaudeMessagingProtocol,
+    ClaudeWire,
     SessionNameInUseError,
     StorageError,
 )
@@ -1430,6 +1431,136 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
 
         mock_server.close()
         await mock_server.wait_closed()
+
+
+class TestDuplicateSessionNames(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.sessions_dir = os.path.join(self.tmp_dir.name, "sessions")
+        os.makedirs(self.sessions_dir)
+        self.procs = [subprocess.Popen(["sleep", "60"]) for _ in range(2)]
+        self.pid_a, self.pid_b = self.procs[0].pid, self.procs[1].pid
+        self.servers = []
+        self.client = ClaudeClient(
+            bridge_socket_path=os.path.join(self.tmp_dir.name, "sender.sock"),
+            session_name="sender",
+            enable_storage=False,
+            as_bridge=False,
+        )
+        self.client.sessions_dir = self.sessions_dir
+
+    async def asyncTearDown(self):
+        for server in self.servers:
+            server.close()
+            await server.wait_closed()
+        for proc in self.procs:
+            proc.kill()
+            proc.wait()
+        self.tmp_dir.cleanup()
+
+    def _descriptor(self, filename, pid, name, sock):
+        path = os.path.join(self.sessions_dir, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"pid": pid, "name": name, "messagingSocketPath": sock, "sessionId": f"sid-{pid}"}, f)
+        return path
+
+    async def _listen(self, name, received):
+        sock = os.path.join(self.tmp_dir.name, f"{name}.sock")
+
+        async def handler(reader, writer):
+            line = await reader.readline()
+            if line:
+                received.append(json.loads(line.decode("utf-8")))
+            writer.close()
+
+        self.servers.append(await asyncio.start_unix_server(handler, sock))
+        return sock
+
+    async def test_scan_keeps_every_live_session_sharing_a_name(self):
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "worker", "/sock/a")
+        self._descriptor(f"{self.pid_b}.json", self.pid_b, "worker", "/sock/b")
+
+        peers = ClaudeWire.scan_sessions(self.sessions_dir)
+
+        self.assertEqual(
+            sorted(peers), sorted([f"worker#{self.pid_a}", f"worker#{self.pid_b}"])
+        )
+        self.assertEqual({p["socket"] for p in peers.values()}, {"/sock/a", "/sock/b"})
+        self.assertEqual({p["name"] for p in peers.values()}, {"worker"})
+
+    async def test_unique_names_stay_keyed_by_plain_name(self):
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "solo", "/sock/a")
+        self._descriptor(f"{self.pid_b}.json", self.pid_b, "other", "/sock/b")
+
+        peers = ClaudeWire.scan_sessions(self.sessions_dir)
+
+        self.assertEqual(sorted(peers), ["other", "solo"])
+
+    async def test_named_descriptor_for_same_pid_is_not_a_duplicate(self):
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "worker", "/sock/a")
+        self._descriptor("bridge-worker.json", self.pid_a, "worker", "/sock/a")
+
+        peers = ClaudeWire.scan_sessions(self.sessions_dir)
+
+        self.assertEqual(list(peers), ["worker"])
+
+    async def test_verify_and_purge_keeps_duplicates_and_their_files(self):
+        file_a = self._descriptor(f"{self.pid_a}.json", self.pid_a, "worker", "/sock/a")
+        file_b = self._descriptor(f"{self.pid_b}.json", self.pid_b, "worker", "/sock/b")
+
+        peers = await self.client.verify_and_purge_sessions()
+
+        self.assertEqual(len(peers), 2)
+        self.assertTrue(os.path.exists(file_a))
+        self.assertTrue(os.path.exists(file_b))
+
+    async def test_send_to_ambiguous_name_is_refused_with_candidates(self):
+        received_a, received_b = [], []
+        sock_a = await self._listen("a", received_a)
+        sock_b = await self._listen("b", received_b)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "worker", sock_a)
+        self._descriptor(f"{self.pid_b}.json", self.pid_b, "worker", sock_b)
+
+        res = await self.client.send_message("worker", "who gets this?")
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(res["success"])
+        self.assertEqual({c["pid"] for c in res["candidates"]}, {self.pid_a, self.pid_b})
+        self.assertEqual(received_a, [])
+        self.assertEqual(received_b, [])
+
+    async def test_send_by_pid_reaches_only_that_session(self):
+        received_a, received_b = [], []
+        sock_a = await self._listen("a", received_a)
+        sock_b = await self._listen("b", received_b)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "worker", sock_a)
+        self._descriptor(f"{self.pid_b}.json", self.pid_b, "worker", sock_b)
+
+        res_b = await self.client.send_message(str(self.pid_b), "for b only")
+        await asyncio.sleep(0.05)
+        self.assertTrue(res_b["success"])
+        self.assertEqual(received_a, [])
+        self.assertEqual(len(received_b), 1)
+
+        res_a = await self.client.send_message(str(self.pid_a), "for a only")
+        await asyncio.sleep(0.05)
+        self.assertTrue(res_a["success"])
+        self.assertEqual(len(received_a), 1)
+        self.assertEqual(len(received_b), 1)
+
+    async def test_send_by_session_id_reaches_only_that_session(self):
+        received_a, received_b = [], []
+        sock_a = await self._listen("a", received_a)
+        sock_b = await self._listen("b", received_b)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "worker", sock_a)
+        self._descriptor(f"{self.pid_b}.json", self.pid_b, "worker", sock_b)
+
+        res = await self.client.send_message(f"sid-{self.pid_a}", "for a only")
+        await asyncio.sleep(0.05)
+
+        self.assertTrue(res["success"])
+        self.assertEqual(len(received_a), 1)
+        self.assertEqual(received_b, [])
 
 
 class TestCoreCLI(unittest.TestCase):

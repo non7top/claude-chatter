@@ -6,7 +6,7 @@ from .client import ClaudeClient
 from .protocol import ClaudeMessagingProtocol
 from .jobs import list_jobs
 from .storage import MessageStore, ResponseStore
-from .exceptions import ChatterError, SessionNameInUseError, StorageError
+from .exceptions import AmbiguousSessionError, ChatterError, SessionNameInUseError, StorageError
 
 __all__ = [
     "ClaudeWire",
@@ -15,6 +15,7 @@ __all__ = [
     "list_jobs",
     "MessageStore",
     "ResponseStore",
+    "AmbiguousSessionError",
     "ChatterError",
     "SessionNameInUseError",
     "StorageError",
