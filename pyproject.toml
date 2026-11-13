@@ -10,6 +10,16 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [{ name = "non7top" }]
+keywords = ["claude-code", "ipc", "unix-domain-sockets", "peer-messaging"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "psutil>=5.9.0",
 ]
@@ -20,6 +30,11 @@ dev = [
     "flake8>=6.0.0",
     "build>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/non7top/claude-chatter"
+Issues = "https://github.com/non7top/claude-chatter/issues"
+Changelog = "https://github.com/non7top/claude-chatter/blob/master/CHANGELOG.md"
 
 [project.scripts]
 claude-chatter = "claude_chatter.cli:main"
