@@ -13,7 +13,8 @@ import time
 import uuid
 import asyncio
 import logging
-from typing import Any, Dict, Optional, Tuple
+from collections import Counter
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import psutil
 
@@ -57,6 +58,16 @@ class ClaudeWire:
         except Exception:
             return False
 
+    @staticmethod
+    def index_peers(peers: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Keys peers by name; a name shared by several sessions is keyed name#pid for each."""
+        peers = list(peers)
+        counts = Counter(p["name"] for p in peers)
+        return {
+            (p["name"] if counts[p["name"]] == 1 else f"{p['name']}#{p['pid']}"): p
+            for p in peers
+        }
+
     @classmethod
     def scan_sessions(cls, sessions_dir: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         """
@@ -69,8 +80,8 @@ class ClaudeWire:
         if not os.path.exists(sessions_dir):
             return {}
 
-        active_sessions: Dict[str, Dict[str, Any]] = {}
-        for file_path in glob.glob(os.path.join(sessions_dir, "*.json")):
+        live_by_pid: Dict[int, Dict[str, Any]] = {}
+        for file_path in sorted(glob.glob(os.path.join(sessions_dir, "*.json"))):
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
@@ -78,7 +89,7 @@ class ClaudeWire:
                 pid = meta.get("pid")
                 proc_start = meta.get("procStart")
 
-                if pid and cls.is_pid_alive(pid, proc_start):
+                if pid and pid not in live_by_pid and cls.is_pid_alive(pid, proc_start):
                     name = meta.get("name", f"session-{pid}")
                     key_pattern = os.path.join(sessions_dir, f"{pid}.*.key")
                     discovered_keys = glob.glob(key_pattern)
@@ -99,7 +110,7 @@ class ClaudeWire:
                         except Exception as kerr:
                             logger.error(f"Failed to read key file {discovered_keys[0]}: {kerr}")
 
-                    active_sessions[name] = {
+                    live_by_pid[pid] = {
                         "name": name,
                         "pid": pid,
                         "sessionId": meta.get("sessionId", ""),
@@ -116,7 +127,7 @@ class ClaudeWire:
             except Exception as e:
                 logger.error(f"Error reading session file {file_path}: {e}")
 
-        return active_sessions
+        return cls.index_peers(live_by_pid.values())
 
     @staticmethod
     def redact_peers(peers: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:

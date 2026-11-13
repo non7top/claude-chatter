@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, Optional, Set
 
 from .wire import ClaudeWire
 from .storage import MessageStore, ResponseStore
-from .exceptions import SessionNameInUseError, StorageError
+from .exceptions import AmbiguousSessionError, SessionNameInUseError, StorageError
 
 logger = logging.getLogger("claude_chatter")
 
@@ -342,8 +342,8 @@ class ClaudeClient:
             self.active_peers = {}
             return {}
 
-        current_sessions: Dict[str, Dict[str, Any]] = {}
-        json_files = glob.glob(os.path.join(self.sessions_dir, "*.json"))
+        live_by_pid: Dict[int, Dict[str, Any]] = {}
+        json_files = sorted(glob.glob(os.path.join(self.sessions_dir, "*.json")))
         purged_count = 0
 
         for file_path in json_files:
@@ -378,7 +378,7 @@ class ClaudeClient:
                         except Exception as kerr:
                             logger.error(f"Failed to read key file {discovered_keys[0]}: {kerr}")
 
-                    current_sessions[name] = {
+                    live_by_pid[pid] = {
                         "name": name,
                         "pid": pid,
                         "sessionId": session_id,
@@ -410,6 +410,7 @@ class ClaudeClient:
             except Exception as e:
                 logger.error(f"Error checking session file {file_path}: {e}")
 
+        current_sessions = ClaudeWire.index_peers(live_by_pid.values())
         self.active_peers = current_sessions
         if self.store:
             self.store.prune()
@@ -441,6 +442,10 @@ class ClaudeClient:
             if peer.get("sessionId") == session_identifier:
                 return peer
 
+        same_name = [p for p in self.active_peers.values() if p.get("name") == session_identifier]
+        if len(same_name) > 1:
+            raise AmbiguousSessionError(session_identifier, same_name)
+
         session_lower = session_identifier.lower()
         for name, peer in self.active_peers.items():
             if session_lower in name.lower():
@@ -471,7 +476,18 @@ class ClaudeClient:
 
         await self.verify_and_purge_sessions()
 
-        peer = self._resolve_session(target)
+        try:
+            peer = self._resolve_session(target)
+        except AmbiguousSessionError as e:
+            return {
+                "success": False,
+                "error": f"Target '{target}' matches {len(e.candidates)} live sessions; "
+                         f"address one by pid or sessionId.",
+                "candidates": [
+                    {"name": c["name"], "pid": c["pid"], "sessionId": c.get("sessionId"), "cwd": c.get("cwd")}
+                    for c in e.candidates
+                ],
+            }
         if not peer:
             logger.error(f"Target session '{target}' is not reachable.")
             return {
