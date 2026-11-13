@@ -57,6 +57,7 @@ class ClaudeClient:
         self.read_only = read_only
         self.project_path = project_path or os.environ.get("CHATTER_PROJECT_PATH") or os.getcwd()
         self._background_tasks: Set[asyncio.Task] = set()
+        self._listening = False
 
         env_name = os.environ.get("CHATTER_SESSION_NAME")
         self.session_name = session_name or env_name or self._derive_default_session_name()
@@ -503,9 +504,10 @@ class ClaudeClient:
             }
 
         msg_id = str(uuid.uuid4())
-        from_uri = f"uds:{self.bridge_socket_path}"
+        from_uri = f"uds:{self.bridge_socket_path}" if self._listening else None
+        from_attr = f'from="{from_uri}" ' if from_uri else ""
         wrapped_content = (
-            f'<cross-session-message from="{from_uri}" from-name="{self.session_name}" '
+            f'<cross-session-message {from_attr}from-name="{self.session_name}" '
             f'from-mode="prompting">\n{message_content}\n</cross-session-message>'
         )
         message_frame = {
@@ -514,8 +516,9 @@ class ClaudeClient:
             "type": "user",
             "message": {"role": "user", "content": wrapped_content},
             "priority": priority,
-            "from": from_uri
         }
+        if from_uri:
+            message_frame["from"] = from_uri
 
         try:
             reader, writer = await asyncio.open_unix_connection(socket_path)
@@ -776,6 +779,7 @@ class ClaudeClient:
             )
             os.chmod(self.bridge_socket_path, stat.S_IRUSR | stat.S_IWUSR)
             logger.info(f"Bridge server operational on: {self.bridge_socket_path}")
+            self._listening = True
 
             async with server:
                 await server.serve_forever()
@@ -783,6 +787,8 @@ class ClaudeClient:
             pass
         except Exception as e:
             logger.error(f"Bridge listener server error: {e}")
+        finally:
+            self._listening = False
 
     start_listener = start_bridge_listener
 

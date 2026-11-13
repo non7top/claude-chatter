@@ -1438,6 +1438,69 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+    async def _send_and_capture_frame(self):
+        mock_sock_path = os.path.join(self.tmp_dir.name, "capture_target.sock")
+        received = []
+
+        async def handler(reader, writer):
+            line = await reader.readline()
+            if line:
+                received.append(json.loads(line.decode("utf-8")))
+            writer.close()
+
+        mock_server = await asyncio.start_unix_server(handler, mock_sock_path)
+        self.bridge.active_peers = {
+            "capture-peer": {"name": "capture-peer", "pid": 88889, "sessionId": "sid", "socket": mock_sock_path}
+        }
+
+        async def bypass_verify():
+            return self.bridge.active_peers
+        self.bridge.verify_and_purge_sessions = bypass_verify
+
+        res = await self.bridge.send_message("capture-peer", "hello")
+        await asyncio.sleep(0.05)
+        mock_server.close()
+        await mock_server.wait_closed()
+        self.assertTrue(res["success"])
+        return received[0]
+
+    async def test_send_without_listener_carries_no_reply_address(self):
+        frame = await self._send_and_capture_frame()
+
+        self.assertNotIn("from", frame)
+        content = frame["message"]["content"]
+        self.assertNotIn(' from="', content)
+        self.assertIn('from-name="', content)
+
+    async def test_send_while_listening_carries_the_bound_socket_as_reply_address(self):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+
+        frame = await self._send_and_capture_frame()
+
+        expected = f"uds:{self.socket_path}"
+        self.assertEqual(frame["from"], expected)
+        self.assertIn(f'from="{expected}"', frame["message"]["content"])
+
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_reply_address_is_dropped_once_the_listener_stops(self):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+        frame = await self._send_and_capture_frame()
+
+        self.assertNotIn("from", frame)
+
     async def test_outbound_send_to_mock_peer(self):
         """Verify outbound frame formatting and delivery over target Unix domain socket."""
         mock_sock_path = os.path.join(self.tmp_dir.name, "mock_target.sock")
@@ -1476,7 +1539,6 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(received_frames), 1)
         self.assertEqual(received_frames[0]["type"], "user")
         self.assertEqual(received_frames[0]["msgV"], 1)
-        self.assertTrue(received_frames[0]["from"].startswith("uds:"))
         content = received_frames[0]["message"]["content"]
         self.assertIn('from-name="', content)
         self.assertIn("Hello Mock Peer!", content)
