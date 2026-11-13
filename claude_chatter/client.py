@@ -447,14 +447,10 @@ class ClaudeClient:
             raise AmbiguousSessionError(session_identifier, same_name)
 
         session_lower = session_identifier.lower()
-        for name, peer in self.active_peers.items():
-            if session_lower in name.lower():
-                return peer
-
-        if session_identifier.lower() in ["default", "first", "active", "any"]:
-            return next(iter(self.active_peers.values()))
-
-        return None
+        partial = [p for p in self.active_peers.values() if session_lower in p["name"].lower()]
+        if len(partial) > 1:
+            raise AmbiguousSessionError(session_identifier, partial)
+        return partial[0] if partial else None
 
     async def send_message(
         self,

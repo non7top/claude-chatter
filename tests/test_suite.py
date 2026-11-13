@@ -28,6 +28,7 @@ sys.path.insert(0, _repo_dir)
 _curr_pythonpath = os.environ.get("PYTHONPATH", "")
 os.environ["PYTHONPATH"] = f"{_repo_dir}:{_curr_pythonpath}" if _curr_pythonpath else _repo_dir
 from claude_chatter import (
+    AmbiguousSessionError,
     ClaudeClient,
     ClaudeMessagingProtocol,
     ClaudeWire,
@@ -1433,7 +1434,9 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         await mock_server.wait_closed()
 
 
-class TestDuplicateSessionNames(unittest.IsolatedAsyncioTestCase):
+class PeerDirTestCase(unittest.IsolatedAsyncioTestCase):
+    """Sessions dir with two live dummy processes and unix-socket listeners standing in for peers."""
+
     async def asyncSetUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.sessions_dir = os.path.join(self.tmp_dir.name, "sessions")
@@ -1476,6 +1479,8 @@ class TestDuplicateSessionNames(unittest.IsolatedAsyncioTestCase):
         self.servers.append(await asyncio.start_unix_server(handler, sock))
         return sock
 
+
+class TestDuplicateSessionNames(PeerDirTestCase):
     async def test_scan_keeps_every_live_session_sharing_a_name(self):
         self._descriptor(f"{self.pid_a}.json", self.pid_a, "worker", "/sock/a")
         self._descriptor(f"{self.pid_b}.json", self.pid_b, "worker", "/sock/b")
@@ -1561,6 +1566,64 @@ class TestDuplicateSessionNames(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res["success"])
         self.assertEqual(len(received_a), 1)
         self.assertEqual(received_b, [])
+
+
+class TestTargetResolution(PeerDirTestCase):
+    def _peers(self, *names):
+        self.client.active_peers = ClaudeWire.index_peers(
+            {"name": n, "pid": 1000 + i, "sessionId": f"sid-{i}", "socket": f"/sock/{n}"}
+            for i, n in enumerate(names)
+        )
+
+    async def test_exact_name_wins_over_longer_names_containing_it(self):
+        self._peers("api-worker", "api")
+
+        self.assertEqual(self.client._resolve_session("api")["name"], "api")
+
+    async def test_unique_partial_name_resolves_case_insensitively(self):
+        self._peers("api-worker", "db")
+
+        self.assertEqual(self.client._resolve_session("WORK")["name"], "api-worker")
+
+    async def test_ambiguous_partial_name_raises_with_all_candidates(self):
+        self._peers("api-worker", "rapid-db", "other")
+
+        with self.assertRaises(AmbiguousSessionError) as ctx:
+            self.client._resolve_session("api")
+
+        self.assertEqual({c["name"] for c in ctx.exception.candidates}, {"api-worker", "rapid-db"})
+
+    async def test_catch_all_aliases_do_not_pick_a_session(self):
+        self._peers("api-worker", "rapid-db")
+
+        for alias in ("any", "first", "default", "active"):
+            self.assertIsNone(self.client._resolve_session(alias), alias)
+
+    async def test_send_to_ambiguous_partial_name_delivers_nothing(self):
+        received_a, received_b = [], []
+        sock_a = await self._listen("a", received_a)
+        sock_b = await self._listen("b", received_b)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "api-worker", sock_a)
+        self._descriptor(f"{self.pid_b}.json", self.pid_b, "rapid-db", sock_b)
+
+        res = await self.client.send_message("api", "which one?")
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(res["success"])
+        self.assertEqual({c["name"] for c in res["candidates"]}, {"api-worker", "rapid-db"})
+        self.assertEqual(received_a, [])
+        self.assertEqual(received_b, [])
+
+    async def test_send_to_any_alias_delivers_nothing(self):
+        received = []
+        sock = await self._listen("a", received)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "api-worker", sock)
+
+        res = await self.client.send_message("any", "to whoever")
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(res["success"])
+        self.assertEqual(received, [])
 
 
 class TestCoreCLI(unittest.TestCase):
