@@ -1574,10 +1574,13 @@ class PeerDirTestCase(unittest.IsolatedAsyncioTestCase):
             proc.wait()
         self.tmp_dir.cleanup()
 
-    def _descriptor(self, filename, pid, name, sock):
+    def _descriptor(self, filename, pid, name, sock, domain=None):
         path = os.path.join(self.sessions_dir, filename)
+        data = {"pid": pid, "name": name, "messagingSocketPath": sock, "sessionId": f"sid-{pid}"}
+        if domain:
+            data["pidDomain"] = domain
         with open(path, "w", encoding="utf-8") as f:
-            json.dump({"pid": pid, "name": name, "messagingSocketPath": sock, "sessionId": f"sid-{pid}"}, f)
+            json.dump(data, f)
         return path
 
     async def _listen(self, name, received):
@@ -1733,6 +1736,50 @@ class TestTargetResolution(PeerDirTestCase):
         self._descriptor(f"{self.pid_a}.json", self.pid_a, "api-worker", sock)
 
         res = await self.client.send_message("any", "to whoever")
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(res["success"])
+        self.assertEqual(received, [])
+
+
+class TestPidDomainFiltering(PeerDirTestCase):
+    FOREIGN = "linux:0123456789abcdef0123456789abcdef:pid:[4026539999]"
+
+    async def test_purge_keeps_foreign_domain_descriptor_with_unknown_pid(self):
+        path = self._descriptor("999999.json", 999999, "elsewhere", "/sock/e", domain=self.FOREIGN)
+
+        peers = await self.client.verify_and_purge_sessions()
+
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(peers, {})
+
+    async def test_foreign_domain_descriptor_is_not_listed_even_if_the_pid_exists_locally(self):
+        path = self._descriptor(f"{self.pid_a}.json", self.pid_a, "elsewhere", "/sock/e", domain=self.FOREIGN)
+
+        self.assertEqual(ClaudeWire.scan_sessions(self.sessions_dir), {})
+        self.assertEqual(await self.client.verify_and_purge_sessions(), {})
+        self.assertTrue(os.path.exists(path))
+
+    async def test_local_domain_dead_session_is_still_purged(self):
+        local = ClaudeWire.compute_pid_domain(os.getpid())
+        path = self._descriptor("999999.json", 999999, "gone", "/sock/g", domain=local)
+
+        await self.client.verify_and_purge_sessions()
+
+        self.assertFalse(os.path.exists(path))
+
+    async def test_local_domain_live_session_is_listed(self):
+        local = ClaudeWire.compute_pid_domain(os.getpid())
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "here", "/sock/h", domain=local)
+
+        self.assertEqual(list(ClaudeWire.scan_sessions(self.sessions_dir)), ["here"])
+
+    async def test_send_to_foreign_domain_session_delivers_nothing(self):
+        received = []
+        sock = await self._listen("e", received)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "elsewhere", sock, domain=self.FOREIGN)
+
+        res = await self.client.send_message("elsewhere", "hello?")
         await asyncio.sleep(0.05)
 
         self.assertFalse(res["success"])

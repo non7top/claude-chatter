@@ -349,11 +349,15 @@ class ClaudeClient:
         live_by_pid: Dict[int, Dict[str, Any]] = {}
         json_files = sorted(glob.glob(os.path.join(self.sessions_dir, "*.json")))
         purged_count = 0
+        local_domain = ClaudeWire.local_pid_domain()
 
         for file_path in json_files:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
+
+                if ClaudeWire.in_foreign_pid_domain(meta, local_domain):
+                    continue
 
                 pid = meta.get("pid")
                 proc_start = meta.get("procStart")

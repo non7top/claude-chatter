@@ -58,6 +58,17 @@ class ClaudeWire:
         except Exception:
             return False
 
+    @classmethod
+    def local_pid_domain(cls) -> Optional[str]:
+        """This process's pidDomain, or None where descriptors' pidDomain can't be compared (non-Linux)."""
+        return cls.compute_pid_domain(os.getpid()) if sys.platform.startswith("linux") else None
+
+    @staticmethod
+    def in_foreign_pid_domain(meta: Dict[str, Any], local_domain: Optional[str]) -> bool:
+        """True for a descriptor whose PID belongs to another PID namespace or machine."""
+        domain = meta.get("pidDomain")
+        return bool(local_domain and domain and domain != local_domain)
+
     @staticmethod
     def index_peers(peers: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         """Keys peers by name; a name shared by several sessions is keyed name#pid for each."""
@@ -81,10 +92,14 @@ class ClaudeWire:
             return {}
 
         live_by_pid: Dict[int, Dict[str, Any]] = {}
+        local_domain = cls.local_pid_domain()
         for file_path in sorted(glob.glob(os.path.join(sessions_dir, "*.json"))):
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
+
+                if cls.in_foreign_pid_domain(meta, local_domain):
+                    continue
 
                 pid = meta.get("pid")
                 proc_start = meta.get("procStart")
