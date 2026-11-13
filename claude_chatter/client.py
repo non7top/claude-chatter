@@ -43,11 +43,16 @@ class ClaudeClient:
         as_bridge: bool = True,
         read_only: bool = False,
         project_path: Optional[str] = None,
+        require_auth: bool = False,
     ):
         """
         on_inbound_message(event: dict), if given, is invoked whenever a real
         inbound message frame is processed. Dispatched after persisting to
         memory and SQLite.
+
+        An inbound auth line is checked against this session's registered token and the
+        connection is closed on a mismatch. With require_auth, a connection must also
+        open with a valid auth line, and everything is refused while no token is registered.
         """
         self.pid = os.getpid()
         self.home_dir = os.path.expanduser("~")
@@ -58,6 +63,8 @@ class ClaudeClient:
         self.project_path = project_path or os.environ.get("CHATTER_PROJECT_PATH") or os.getcwd()
         self._background_tasks: Set[asyncio.Task] = set()
         self._listening = False
+        self.require_auth = require_auth
+        self.registered_token: Optional[str] = None
 
         env_name = os.environ.get("CHATTER_SESSION_NAME")
         self.session_name = session_name or env_name or self._derive_default_session_name()
@@ -595,7 +602,16 @@ class ClaudeClient:
             getattr(self, "named_descriptor_path", None)
         )
 
+    def _auth_token_valid(self, payload: Dict[str, Any]) -> bool:
+        if not self.registered_token:
+            return not self.require_auth
+        presented = payload.get("token", payload.get("peerToken"))
+        return isinstance(presented, str) and secrets.compare_digest(
+            presented.encode("utf-8"), self.registered_token.encode("utf-8")
+        )
+
     async def handle_inbound_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        authenticated = False
         try:
             peer_pid = ClaudeWire.peer_pid(writer.get_extra_info("socket"))
             peer_session = None
@@ -619,8 +635,16 @@ class ClaudeClient:
                     frame_type = payload.get("type")
 
                     if frame_type == "auth":
+                        if not self._auth_token_valid(payload):
+                            logger.warning("Inbound peer sent an invalid auth token; closing connection")
+                            break
+                        authenticated = True
                         logger.info("Inbound peer authenticated successfully.")
                         continue
+
+                    if self.require_auth and not authenticated:
+                        logger.warning("Inbound frame before authentication; closing connection")
+                        break
 
                     msg_id = payload.get("msg_id", f"inbound_{uuid.uuid4()}")
 

@@ -48,6 +48,8 @@ async def on_message(event):
 client = ClaudeClient(session_name="listener", on_inbound_message=on_message)
 ```
 
+An inbound `{"type":"auth","token":"..."}` line (`peerToken` is accepted as the key too) is checked against the token this process registered, and the connection is closed on a mismatch. `ClaudeClient(require_auth=True)` additionally refuses any connection that does not open with a valid auth line.
+
 `event["sender"]` is the live session that owns the connecting process (or an ancestor of it) when one can be found, with `event["sender_verified"] = True`. Otherwise it is the name the frame claims and `sender_verified` is `False`. `claimed_sender`, `peer_pid` and the wrapper's `from_mode` are always included. Peer lookup needs Linux (`SO_PEERCRED`) and a sender that is still running when the connection is accepted.
 
 ### CLI Tool

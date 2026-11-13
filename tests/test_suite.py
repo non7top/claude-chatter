@@ -1332,6 +1332,109 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+    async def _exchange(self, bridge, lines):
+        """Sends all lines on one connection to a freshly started listener of `bridge`."""
+        server_task = asyncio.create_task(bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        reader, writer = await asyncio.open_unix_connection(bridge.bridge_socket_path)
+        try:
+            for line in lines:
+                writer.write((json.dumps(line) + "\n").encode("utf-8"))
+            await writer.drain()
+            await asyncio.sleep(0.3)
+            writer.close()
+            await writer.wait_closed()
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    def _strict_bridge(self, name):
+        bridge = ClaudeClient(
+            bridge_socket_path=os.path.join(self.tmp_dir.name, f"{name}.sock"),
+            session_name=name,
+            enable_storage=False,
+            as_bridge=False,
+            require_auth=True,
+        )
+        bridge.sessions_dir = self.bridge.sessions_dir
+        bridge.registered_token = "strict-token"
+        return bridge
+
+    async def test_auth_line_with_the_registered_token_is_accepted(self):
+        self.bridge.register_session_descriptor(session_name="auth-ok")
+        token = self.bridge.registered_token
+
+        await self._exchange(self.bridge, [
+            {"type": "auth", "token": token}, self._claiming_frame("a1", "peer"),
+        ])
+
+        self.assertIn("a1", self.bridge.response_store)
+
+    async def test_auth_line_may_use_the_peer_token_key(self):
+        self.bridge.register_session_descriptor(session_name="auth-key")
+        token = self.bridge.registered_token
+
+        await self._exchange(self.bridge, [
+            {"type": "auth", "peerToken": token}, self._claiming_frame("a2", "peer"),
+        ])
+
+        self.assertIn("a2", self.bridge.response_store)
+
+    async def test_auth_line_with_a_wrong_token_closes_the_connection_without_delivery(self):
+        self.bridge.register_session_descriptor(session_name="auth-bad")
+
+        await self._exchange(self.bridge, [
+            {"type": "auth", "token": "WRONG"}, self._claiming_frame("a3", "peer"),
+        ])
+
+        self.assertNotIn("a3", self.bridge.response_store)
+
+    async def test_connection_without_auth_line_is_accepted_by_default(self):
+        self.bridge.register_session_descriptor(session_name="auth-opt")
+
+        await self._exchange(self.bridge, [self._claiming_frame("a4", "peer")])
+
+        self.assertIn("a4", self.bridge.response_store)
+
+    async def test_require_auth_rejects_a_connection_without_auth_line(self):
+        strict = self._strict_bridge("strict-none")
+
+        await self._exchange(strict, [self._claiming_frame("a5", "peer")])
+
+        self.assertNotIn("a5", strict.response_store)
+
+    async def test_require_auth_rejects_a_frame_sent_before_the_auth_line(self):
+        strict = self._strict_bridge("strict-late")
+
+        await self._exchange(strict, [
+            self._claiming_frame("a6", "peer"), {"type": "auth", "token": "strict-token"},
+        ])
+
+        self.assertNotIn("a6", strict.response_store)
+
+    async def test_require_auth_accepts_a_valid_auth_line_first(self):
+        strict = self._strict_bridge("strict-ok")
+
+        await self._exchange(strict, [
+            {"type": "auth", "token": "strict-token"}, self._claiming_frame("a7", "peer"),
+        ])
+
+        self.assertIn("a7", strict.response_store)
+
+    async def test_require_auth_without_a_registered_token_refuses_everything(self):
+        strict = self._strict_bridge("strict-notoken")
+        strict.registered_token = None
+
+        await self._exchange(strict, [
+            {"type": "auth", "token": "anything"}, self._claiming_frame("a8", "peer"),
+        ])
+
+        self.assertNotIn("a8", strict.response_store)
+
     async def test_sender_without_matching_session_is_marked_unverified(self):
         await self._listen_and_post(self._claiming_frame("m1", "spoof"))
 
