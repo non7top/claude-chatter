@@ -534,6 +534,9 @@ class ClaudeClient:
 
         try:
             reader, writer = await asyncio.open_unix_connection(socket_path)
+            peer_token = peer.get("token")
+            if peer_token:
+                writer.write((json.dumps({"type": "auth", "token": peer_token}) + "\n").encode("utf-8"))
             writer.write((json.dumps(message_frame) + "\n").encode("utf-8"))
             await writer.drain()
 

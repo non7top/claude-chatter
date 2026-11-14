@@ -59,6 +59,8 @@ client = ClaudeClient(session_name="listener", on_inbound_message=on_message)
 
 An inbound `{"type":"auth","token":"..."}` line (`peerToken` is accepted as the key too) is checked against the token this process registered, and the connection is closed on a mismatch. `ClaudeClient(require_auth=True)` additionally refuses any connection that does not open with a valid auth line.
 
+On send, when the target's key file provides a token, the connection opens with `{"type":"auth","token":"..."}` before the message frame. A Claude Code session (checked on Linux, 2.1.325) delivers a message whether or not the line is present and whatever token it carries.
+
 `event["sender"]` is the live session that owns the connecting process (or an ancestor of it) when one can be found, with `event["sender_verified"] = True`. Otherwise it is the name the frame claims and `sender_verified` is `False`. `claimed_sender`, `peer_pid` and the wrapper's `from_mode` are always included. Peer lookup needs Linux (`SO_PEERCRED`) and a sender that is still running when the connection is accepted.
 
 ### CLI Tool
