@@ -1376,6 +1376,32 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+    async def test_self_send_keeps_the_inbound_message_unread(self):
+        import sqlite3
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        try:
+            self.bridge.register_session_descriptor(session_name=self.bridge.session_name)
+            res = await self.bridge.send_message(self.bridge.session_name, "hello self")
+            self.assertTrue(res["success"])
+            await asyncio.sleep(0.3)
+
+            unread = self.bridge.get_unread_messages(mark_read=False)
+            self.assertEqual(list(unread), [res["msg_id"]])
+            self.assertEqual(unread[res["msg_id"]]["direction"], "inbound")
+            self.assertEqual(unread[res["msg_id"]]["content"], "hello self")
+
+            with sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True) as con:
+                rows = con.execute("SELECT direction, read FROM messages").fetchall()
+            con.close()
+            self.assertEqual(rows, [("inbound", 0)])
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
     async def _exchange(self, bridge, lines):
         """Sends all lines on one connection to a freshly started listener of `bridge`."""
         server_task = asyncio.create_task(bridge.start_bridge_listener())

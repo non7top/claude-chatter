@@ -557,7 +557,9 @@ class ClaudeClient:
                 "response": "",
                 "timestamp": time.time()
             }
-            self.response_store[msg_id] = entry
+            if os.path.realpath(socket_path) != os.path.realpath(self.bridge_socket_path):
+                # A self-send reuses msg_id for the inbound entry; storing this one would overwrite it.
+                self.response_store[msg_id] = entry
             logger.info(f"Successfully dispatched message {msg_id} to {peer['name']}")
 
             return {
