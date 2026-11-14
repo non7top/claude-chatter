@@ -64,6 +64,7 @@ class ClaudeClient:
         self.project_path = project_path or os.environ.get("CHATTER_PROJECT_PATH") or os.getcwd()
         self._background_tasks: Set[asyncio.Task] = set()
         self._listening = False
+        self._idle_waiters: Dict[str, asyncio.Future] = {}
         self.require_auth = require_auth
         self.registered_token: Optional[str] = None
 
@@ -468,6 +469,94 @@ class ClaudeClient:
             raise AmbiguousSessionError(session_identifier, partial)
         return partial[0] if partial else None
 
+    async def _resolve_live_target(self, target: str):
+        """Returns (peer, None) for a reachable target, or (None, error_result)."""
+        await self.verify_and_purge_sessions()
+
+        try:
+            peer = self._resolve_session(target)
+        except AmbiguousSessionError as e:
+            return None, {
+                "success": False,
+                "error": f"Target '{target}' matches {len(e.candidates)} live sessions; "
+                         f"address one by pid or sessionId.",
+                "candidates": [
+                    {"name": c["name"], "pid": c["pid"], "sessionId": c.get("sessionId"), "cwd": c.get("cwd")}
+                    for c in e.candidates
+                ],
+            }
+        if not peer:
+            logger.error(f"Target session '{target}' is not reachable.")
+            return None, {
+                "success": False,
+                "error": f"Target session '{target}' not found among active sessions: {list(self.active_peers.keys())}"
+            }
+
+        socket_path = peer.get("socket")
+        if not socket_path or not os.path.exists(socket_path):
+            logger.error(f"Socket path for '{peer['name']}' does not exist: {socket_path}")
+            return None, {
+                "success": False,
+                "error": f"Socket path '{socket_path}' for session '{peer['name']}' does not exist on disk."
+            }
+        return peer, None
+
+    async def notify_when_idle(self, target: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Subscribes to a one-shot notice for when `target` next goes idle and waits for it.
+        The notice is sent to this client's reply address, so a listener must be bound.
+        """
+        if not self._listening:
+            return {
+                "success": False,
+                "error": "A bound listener is required: the idle notice is sent to this client's reply address.",
+            }
+        peer, error = await self._resolve_live_target(target)
+        if error:
+            return error
+
+        msg_id = str(uuid.uuid4())
+        frame = {
+            "type": "control",
+            "msgV": 1,
+            "action": "notify_when_idle",
+            "from": f"uds:{self.bridge_socket_path}",
+            "msg_id": msg_id,
+            "from_mode": "prompting",
+        }
+        waiter = asyncio.get_running_loop().create_future()
+        self._idle_waiters[msg_id] = waiter
+        try:
+            reader, writer = await asyncio.open_unix_connection(peer["socket"])
+            try:
+                if peer.get("token"):
+                    writer.write((json.dumps({"type": "auth", "token": peer["token"]}) + "\n").encode("utf-8"))
+                writer.write((json.dumps(frame) + "\n").encode("utf-8"))
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            notice = await asyncio.wait_for(waiter, timeout)
+        except asyncio.TimeoutError:
+            return {"success": False, "error": f"No idle notice from '{peer['name']}' within {timeout} seconds."}
+        except Exception as e:
+            logger.error(f"Failed to subscribe to idle notice from {peer['socket']}: {e}")
+            return {"success": False, "error": f"Failed to send the subscription to {peer['socket']}: {e}"}
+        finally:
+            self._idle_waiters.pop(msg_id, None)
+        return {"success": True, "target": peer["name"], "msg_id": msg_id, "notice": notice}
+
+    def _handle_control_frame(self, payload: Dict[str, Any]) -> None:
+        action = payload.get("action")
+        if action == "peer_idle_notice":
+            waiter = self._idle_waiters.get(payload.get("orig_msg_id"))
+            if waiter is not None and not waiter.done():
+                waiter.set_result(payload)
+            else:
+                logger.info("Ignoring a peer_idle_notice that matches no pending subscription")
+        else:
+            logger.info(f"Ignoring control frame with action {action!r}")
+
     async def send_message(
         self,
         target_session: Optional[str] = None,
@@ -486,34 +575,10 @@ class ClaudeClient:
         if message_content is None:
             return {"success": False, "error": "Message content required."}
 
-        await self.verify_and_purge_sessions()
-
-        try:
-            peer = self._resolve_session(target)
-        except AmbiguousSessionError as e:
-            return {
-                "success": False,
-                "error": f"Target '{target}' matches {len(e.candidates)} live sessions; "
-                         f"address one by pid or sessionId.",
-                "candidates": [
-                    {"name": c["name"], "pid": c["pid"], "sessionId": c.get("sessionId"), "cwd": c.get("cwd")}
-                    for c in e.candidates
-                ],
-            }
-        if not peer:
-            logger.error(f"Target session '{target}' is not reachable.")
-            return {
-                "success": False,
-                "error": f"Target session '{target}' not found among active sessions: {list(self.active_peers.keys())}"
-            }
-
-        socket_path = peer.get("socket")
-        if not socket_path or not os.path.exists(socket_path):
-            logger.error(f"Socket path for '{peer['name']}' does not exist: {socket_path}")
-            return {
-                "success": False,
-                "error": f"Socket path '{socket_path}' for session '{peer['name']}' does not exist on disk."
-            }
+        peer, error = await self._resolve_live_target(target)
+        if error:
+            return error
+        socket_path = peer["socket"]
 
         msg_id = str(uuid.uuid4())
         from_uri = f"uds:{self.bridge_socket_path}" if self._listening else None
@@ -659,6 +724,10 @@ class ClaudeClient:
                     if self.require_auth and not authenticated:
                         logger.warning("Inbound frame before authentication; closing connection")
                         break
+
+                    if frame_type == "control":
+                        self._handle_control_frame(payload)
+                        continue
 
                     msg_id = payload.get("msg_id", f"inbound_{uuid.uuid4()}")
 
