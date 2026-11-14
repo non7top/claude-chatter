@@ -32,6 +32,8 @@ logger = logging.getLogger("claude_chatter")
 class ClaudeClient:
     # Covers the documented ~1M-character message cap even when JSON-escaped to 6 bytes per character.
     MAX_FRAME_BYTES = 8 * 1024 * 1024
+    # Claude Code drops its own idle subscriptions after 12 hours without a notice.
+    IDLE_SUBSCRIPTION_TTL = 12 * 60 * 60
 
     def __init__(
         self,
@@ -65,6 +67,7 @@ class ClaudeClient:
         self._background_tasks: Set[asyncio.Task] = set()
         self._listening = False
         self._idle_waiters: Dict[str, asyncio.Future] = {}
+        self._idle_subscribers: Dict[str, Dict[str, Any]] = {}
         self.require_auth = require_auth
         self.registered_token: Optional[str] = None
 
@@ -554,8 +557,94 @@ class ClaudeClient:
                 waiter.set_result(payload)
             else:
                 logger.info("Ignoring a peer_idle_notice that matches no pending subscription")
+        elif action == "notify_when_idle":
+            self._remember_idle_subscriber(payload)
         else:
             logger.info(f"Ignoring control frame with action {action!r}")
+
+    def _remember_idle_subscriber(self, payload: Dict[str, Any]) -> None:
+        reply = payload.get("from")
+        sub_id = payload.get("msg_id")
+        if not isinstance(reply, str) or not reply.startswith("uds:") or len(reply) <= len("uds:"):
+            logger.info("Ignoring a notify_when_idle frame without a uds: reply address")
+            return
+        if not isinstance(sub_id, str) or not sub_id:
+            logger.info("Ignoring a notify_when_idle frame without a msg_id")
+            return
+        self._idle_subscribers[sub_id] = {
+            "msg_id": sub_id,
+            "reply": reply,
+            "from_mode": payload.get("from_mode"),
+            "subscribed_at": time.time(),
+        }
+        logger.info(f"Remembered idle subscriber {reply}")
+
+    def _prune_idle_subscribers(self) -> None:
+        cutoff = time.time() - self.IDLE_SUBSCRIPTION_TTL
+        for sub_id in [k for k, v in self._idle_subscribers.items() if v["subscribed_at"] < cutoff]:
+            del self._idle_subscribers[sub_id]
+
+    def pending_idle_subscriptions(self) -> int:
+        self._prune_idle_subscribers()
+        return len(self._idle_subscribers)
+
+    def _subscriber_token(self, reply_path: str) -> str:
+        """The token a subscriber published in <pid>.<sha256 of its socket path>.key, or ''."""
+        digest = hashlib.sha256(reply_path.encode("utf-8")).hexdigest()
+        for key_file in glob.glob(os.path.join(self.sessions_dir, f"*.{digest}.key")):
+            try:
+                with open(key_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                token = data.get("peerToken") if isinstance(data, dict) else None
+                if isinstance(token, str):
+                    return token
+            except (OSError, ValueError):
+                continue
+        return ""
+
+    async def publish_idle(self, finished_at_ms: Optional[int] = None, detail: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Sends one peer_idle_notice to every pending subscriber and drops each subscription (one-shot).
+        Returns {"notified": int, "failed": [{"msg_id", "reply", "error"}], "pending": int}.
+        """
+        self._prune_idle_subscribers()
+        subscribers = list(self._idle_subscribers.values())
+        self._idle_subscribers.clear()
+        finished_at = finished_at_ms if finished_at_ms is not None else int(time.time() * 1000)
+
+        notified = 0
+        failed = []
+        for sub in subscribers:
+            notice = {
+                "type": "control",
+                "msgV": 1,
+                "action": "peer_idle_notice",
+                "orig_msg_id": sub["msg_id"],
+                "state": "idle",
+                "finished_at": finished_at,
+                "from": f"uds:{self.bridge_socket_path}",
+                "from_mode": "prompting",
+                "msg_id": str(uuid.uuid4()),
+            }
+            if detail:
+                notice["detail"] = detail
+            reply_path = sub["reply"][len("uds:"):]
+            try:
+                reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(reply_path), timeout=5.0)
+                try:
+                    token = self._subscriber_token(reply_path)
+                    if token:
+                        writer.write((json.dumps({"type": "auth", "token": token}) + "\n").encode("utf-8"))
+                    writer.write((json.dumps(notice) + "\n").encode("utf-8"))
+                    await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                notified += 1
+            except Exception as e:
+                logger.error(f"Failed to send an idle notice to {sub['reply']}: {e}")
+                failed.append({"msg_id": sub["msg_id"], "reply": sub["reply"], "error": str(e) or type(e).__name__})
+        return {"notified": notified, "failed": failed, "pending": len(self._idle_subscribers)}
 
     async def send_message(
         self,
