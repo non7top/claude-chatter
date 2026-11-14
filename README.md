@@ -63,6 +63,8 @@ On send, when the target's key file provides a token, the connection opens with 
 
 `await client.notify_when_idle(target, timeout=None)` subscribes to a one-shot notice for when a Claude Code session next goes idle (Claude Code v2.1.236 or later, same machine) and returns it as `{"success": True, "notice": {...}}`. The notice is sent to this client's reply socket, so a listener must be bound (`start_bridge_listener`); without one the call fails. Control frames other than the idle notice are logged and not stored as messages.
 
+The other side: a bound listener remembers `notify_when_idle` subscribers (reply address from the frame's `from`, which must be a `uds:` path). `await client.publish_idle(finished_at_ms=None, detail=None)` sends each one a `peer_idle_notice` (with an auth line when the subscriber's key file provides a token), drops the subscription, and returns `{"notified", "failed", "pending"}`. `client.pending_idle_subscriptions()` returns the count, and subscriptions expire after 12 hours.
+
 `event["sender"]` is the live session that owns the connecting process (or an ancestor of it) when one can be found, with `event["sender_verified"] = True`. Otherwise it is the name the frame claims and `sender_verified` is `False`. `claimed_sender`, `peer_pid` and the wrapper's `from_mode` are always included. Peer lookup needs Linux (`SO_PEERCRED`) and a sender that is still running when the connection is accepted.
 
 ### CLI Tool

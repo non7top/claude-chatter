@@ -1912,6 +1912,102 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No idle notice", res["error"])
         self.assertEqual(self.bridge._idle_waiters, {})
 
+    @staticmethod
+    def _subscribe_frame(reply, msg_id=None):
+        return {"type": "control", "msgV": 1, "action": "notify_when_idle", "from": reply,
+                "msg_id": msg_id or str(uuid.uuid4()), "from_mode": "prompting"}
+
+    async def _subscriber(self, name="sub", token="subscriber-token"):
+        """A reply socket that records every line it receives, plus its published key file."""
+        import hashlib
+        sock_path = os.path.join(self.tmp_dir.name, f"{name}.sock")
+        received = []
+
+        async def handler(reader, writer):
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                received.append(json.loads(line.decode("utf-8")))
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handler, sock_path)
+        digest = hashlib.sha256(sock_path.encode("utf-8")).hexdigest()
+        key_path = os.path.join(self.bridge.sessions_dir, f"4242.{digest}.key")
+        with open(key_path, "w", encoding="utf-8") as f:
+            json.dump({"peerToken": token}, f)
+        return server, sock_path, received
+
+    async def test_notify_when_idle_frame_is_remembered_not_stored(self):
+        await self._listen_and_post(self._subscribe_frame("uds:/some/reply.sock"))
+        self.assertEqual(self.bridge.pending_idle_subscriptions(), 1)
+        self.assertEqual(self.bridge.get_unread_messages(mark_read=False), {})
+
+    async def test_notify_when_idle_frame_without_a_uds_reply_address_is_ignored(self):
+        await self._listen_and_post(self._subscribe_frame("https://example.invalid/x"))
+        await self._listen_and_post(self._subscribe_frame(""))
+        self.assertEqual(self.bridge.pending_idle_subscriptions(), 0)
+
+    async def test_publish_idle_notifies_each_subscriber_once(self):
+        server, reply_path, received = await self._subscriber()
+        sub_id = str(uuid.uuid4())
+        try:
+            await self._listen_and_post(self._subscribe_frame(f"uds:{reply_path}", sub_id))
+            self.assertEqual(self.bridge.pending_idle_subscriptions(), 1)
+
+            res = await self.bridge.publish_idle(finished_at_ms=1794673624930, detail="turn finished")
+            again = await self.bridge.publish_idle()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        self.assertEqual(res, {"notified": 1, "failed": [], "pending": 0})
+        self.assertEqual(again, {"notified": 0, "failed": [], "pending": 0})
+        self.assertEqual([f["type"] for f in received], ["auth", "control"])
+        self.assertEqual(received[0]["token"], "subscriber-token")
+        notice = received[1]
+        self.assertEqual(notice["action"], "peer_idle_notice")
+        self.assertEqual(notice["orig_msg_id"], sub_id)
+        self.assertEqual(notice["state"], "idle")
+        self.assertEqual(notice["finished_at"], 1794673624930)
+        self.assertEqual(notice["detail"], "turn finished")
+        self.assertEqual(notice["from"], f"uds:{self.socket_path}")
+        self.assertEqual(notice["msgV"], 1)
+
+    async def test_publish_idle_without_a_key_file_sends_no_auth_line(self):
+        server, reply_path, received = await self._subscriber()
+        for name in os.listdir(self.bridge.sessions_dir):
+            if name.endswith(".key"):
+                os.remove(os.path.join(self.bridge.sessions_dir, name))
+        try:
+            await self._listen_and_post(self._subscribe_frame(f"uds:{reply_path}"))
+            res = await self.bridge.publish_idle()
+        finally:
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(res["notified"], 1)
+        self.assertEqual([f["type"] for f in received], ["control"])
+        self.assertNotIn("detail", received[0])
+
+    async def test_publish_idle_reports_an_unreachable_subscriber_and_drops_it(self):
+        gone = os.path.join(self.tmp_dir.name, "gone.sock")
+        sub_id = str(uuid.uuid4())
+        await self._listen_and_post(self._subscribe_frame(f"uds:{gone}", sub_id))
+        res = await self.bridge.publish_idle()
+        self.assertEqual(res["notified"], 0)
+        self.assertEqual(res["pending"], 0)
+        self.assertEqual([(f["msg_id"], f["reply"]) for f in res["failed"]], [(sub_id, f"uds:{gone}")])
+        self.assertTrue(res["failed"][0]["error"])
+
+    async def test_idle_subscriptions_expire(self):
+        await self._listen_and_post(self._subscribe_frame("uds:/some/reply.sock"))
+        for sub in self.bridge._idle_subscribers.values():
+            sub["subscribed_at"] -= self.bridge.IDLE_SUBSCRIPTION_TTL + 1
+        self.assertEqual(self.bridge.pending_idle_subscriptions(), 0)
+        res = await self.bridge.publish_idle()
+        self.assertEqual(res, {"notified": 0, "failed": [], "pending": 0})
+
     async def test_control_frames_are_not_stored_as_messages(self):
         frame = {"type": "control", "action": "peer_message_status", "status": "delivered",
                  "orig_msg_id": str(uuid.uuid4()), "msgV": 1, "msg_id": str(uuid.uuid4())}
