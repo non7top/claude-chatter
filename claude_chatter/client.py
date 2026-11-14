@@ -532,12 +532,20 @@ class ClaudeClient:
         if from_uri:
             message_frame["from"] = from_uri
 
+        frame_bytes = (json.dumps(message_frame) + "\n").encode("utf-8")
+        if len(frame_bytes) > self.MAX_FRAME_BYTES:
+            return {
+                "success": False,
+                "error": f"Message too large: the frame is {len(frame_bytes)} bytes, "
+                         f"the limit is {self.MAX_FRAME_BYTES} bytes.",
+            }
+
         try:
             reader, writer = await asyncio.open_unix_connection(socket_path)
             peer_token = peer.get("token")
             if peer_token:
                 writer.write((json.dumps({"type": "auth", "token": peer_token}) + "\n").encode("utf-8"))
-            writer.write((json.dumps(message_frame) + "\n").encode("utf-8"))
+            writer.write(frame_bytes)
             await writer.drain()
 
             try:

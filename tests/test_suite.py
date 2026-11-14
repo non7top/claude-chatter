@@ -1806,6 +1806,38 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         mock_server.close()
         await mock_server.wait_closed()
 
+    async def test_oversized_message_is_refused_before_sending(self):
+        mock_sock_path = os.path.join(self.tmp_dir.name, "mock_big.sock")
+        connections = []
+
+        async def mock_handler(reader, writer):
+            connections.append(1)
+            writer.close()
+            await writer.wait_closed()
+
+        mock_server = await asyncio.start_unix_server(mock_handler, mock_sock_path)
+        self.bridge.active_peers = {
+            "mock-peer": {"name": "mock-peer", "pid": 88888, "sessionId": "mock-session-xyz",
+                          "socket": mock_sock_path, "token": "", "cwd": "/tmp"}
+        }
+
+        async def bypass_verify():
+            return self.bridge.active_peers
+        self.bridge.verify_and_purge_sessions = bypass_verify
+
+        too_big = "x" * (self.bridge.MAX_FRAME_BYTES + 1)
+        res = await self.bridge.send_message("mock-peer", too_big)
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(res["success"])
+        self.assertIn("too large", res["error"])
+        self.assertIn(str(self.bridge.MAX_FRAME_BYTES), res["error"])
+        self.assertEqual(connections, [])
+        self.assertEqual(self.bridge.response_store, {})
+
+        mock_server.close()
+        await mock_server.wait_closed()
+
     async def test_outbound_send_without_a_peer_token_sends_no_auth_line(self):
         mock_sock_path = os.path.join(self.tmp_dir.name, "mock_notoken.sock")
         received_frames = []
