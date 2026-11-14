@@ -9,6 +9,7 @@ import os
 import sys
 import glob
 import json
+import hashlib
 import time
 import uuid
 import asyncio
@@ -228,7 +229,8 @@ class ClaudeWire:
         sanitized_name = session_name.replace("/", "-")
 
         json_path = os.path.join(sessions_dir, f"{pid}.json")
-        key_path = os.path.join(sessions_dir, f"{pid}.{token[:16]}.key")
+        socket_digest = hashlib.sha256(socket_path.encode("utf-8")).hexdigest()
+        key_path = os.path.join(sessions_dir, f"{pid}.{socket_digest}.key")
         named_path = os.path.join(sessions_dir, f"bridge-{sanitized_name}.json")
 
         proc_start = cls.compute_proc_start(pid)

@@ -63,6 +63,10 @@ class TestBridgeSessionManagement(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(os.path.exists(self.bridge.session_json_path))
         self.assertTrue(os.path.exists(self.bridge.session_key_path))
 
+        # Claude Code finds a peer's key as <pid>.<sha256 of the socket path>.key
+        digest = hashlib.sha256(self.socket_path.encode("utf-8")).hexdigest()
+        self.assertEqual(os.path.basename(self.bridge.session_key_path), f"{self.bridge.pid}.{digest}.key")
+
         # Check json content
         with open(self.bridge.session_json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
