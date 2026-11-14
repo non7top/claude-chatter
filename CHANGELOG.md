@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/non7top/claude-chatter/compare/v0.3.0...v0.4.0) (2026-11-14)
+
+
+### Features
+
+* **client:** let a bridge be subscribed to and publish its idle notice ([68edeea](https://github.com/non7top/claude-chatter/commit/68edeea18e2c698e4b82318994556b7ee81b9b81))
+* **client:** let a bridge be subscribed to and publish its idle notice ([f18bf44](https://github.com/non7top/claude-chatter/commit/f18bf445ce8fc9e3a5c2bb6df28191e16c3530ee))
+
 ## [0.3.0](https://github.com/non7top/claude-chatter/compare/v0.2.2...v0.3.0) (2026-11-14)
 
 
