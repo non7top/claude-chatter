@@ -29,6 +29,9 @@ logger = logging.getLogger("claude_chatter")
 
 
 class ClaudeClient:
+    # Covers the documented ~1M-character message cap even when JSON-escaped to 6 bytes per character.
+    MAX_FRAME_BYTES = 8 * 1024 * 1024
+
     def __init__(
         self,
         bridge_socket_path: Optional[str] = None,
@@ -40,11 +43,16 @@ class ClaudeClient:
         as_bridge: bool = True,
         read_only: bool = False,
         project_path: Optional[str] = None,
+        require_auth: bool = False,
     ):
         """
         on_inbound_message(event: dict), if given, is invoked whenever a real
         inbound message frame is processed. Dispatched after persisting to
         memory and SQLite.
+
+        An inbound auth line is checked against this session's registered token and the
+        connection is closed on a mismatch. With require_auth, a connection must also
+        open with a valid auth line, and everything is refused while no token is registered.
         """
         self.pid = os.getpid()
         self.home_dir = os.path.expanduser("~")
@@ -54,6 +62,9 @@ class ClaudeClient:
         self.read_only = read_only
         self.project_path = project_path or os.environ.get("CHATTER_PROJECT_PATH") or os.getcwd()
         self._background_tasks: Set[asyncio.Task] = set()
+        self._listening = False
+        self.require_auth = require_auth
+        self.registered_token: Optional[str] = None
 
         env_name = os.environ.get("CHATTER_SESSION_NAME")
         self.session_name = session_name or env_name or self._derive_default_session_name()
@@ -345,11 +356,15 @@ class ClaudeClient:
         live_by_pid: Dict[int, Dict[str, Any]] = {}
         json_files = sorted(glob.glob(os.path.join(self.sessions_dir, "*.json")))
         purged_count = 0
+        local_domain = ClaudeWire.local_pid_domain()
 
         for file_path in json_files:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
+
+                if ClaudeWire.in_foreign_pid_domain(meta, local_domain):
+                    continue
 
                 pid = meta.get("pid")
                 proc_start = meta.get("procStart")
@@ -447,14 +462,10 @@ class ClaudeClient:
             raise AmbiguousSessionError(session_identifier, same_name)
 
         session_lower = session_identifier.lower()
-        for name, peer in self.active_peers.items():
-            if session_lower in name.lower():
-                return peer
-
-        if session_identifier.lower() in ["default", "first", "active", "any"]:
-            return next(iter(self.active_peers.values()))
-
-        return None
+        partial = [p for p in self.active_peers.values() if session_lower in p["name"].lower()]
+        if len(partial) > 1:
+            raise AmbiguousSessionError(session_identifier, partial)
+        return partial[0] if partial else None
 
     async def send_message(
         self,
@@ -504,9 +515,10 @@ class ClaudeClient:
             }
 
         msg_id = str(uuid.uuid4())
-        from_uri = f"uds:{self.bridge_socket_path}"
+        from_uri = f"uds:{self.bridge_socket_path}" if self._listening else None
+        from_attr = f'from="{from_uri}" ' if from_uri else ""
         wrapped_content = (
-            f'<cross-session-message from="{from_uri}" from-name="{self.session_name}" '
+            f'<cross-session-message {from_attr}from-name="{self.session_name}" '
             f'from-mode="prompting">\n{message_content}\n</cross-session-message>'
         )
         message_frame = {
@@ -515,8 +527,9 @@ class ClaudeClient:
             "type": "user",
             "message": {"role": "user", "content": wrapped_content},
             "priority": priority,
-            "from": from_uri
         }
+        if from_uri:
+            message_frame["from"] = from_uri
 
         try:
             reader, writer = await asyncio.open_unix_connection(socket_path)
@@ -589,10 +602,28 @@ class ClaudeClient:
             getattr(self, "named_descriptor_path", None)
         )
 
+    def _auth_token_valid(self, payload: Dict[str, Any]) -> bool:
+        if not self.registered_token:
+            return not self.require_auth
+        presented = payload.get("token", payload.get("peerToken"))
+        return isinstance(presented, str) and secrets.compare_digest(
+            presented.encode("utf-8"), self.registered_token.encode("utf-8")
+        )
+
     async def handle_inbound_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        authenticated = False
         try:
+            peer_pid = ClaudeWire.peer_pid(writer.get_extra_info("socket"))
+            peer_session = None
+            if peer_pid:
+                peer_session = ClaudeWire.match_session_by_pid(peer_pid, ClaudeWire.scan_sessions(self.sessions_dir))
+
             while not reader.at_eof():
-                line = await reader.readline()
+                try:
+                    line = await reader.readline()
+                except ValueError:
+                    logger.error(f"Inbound frame exceeds {self.MAX_FRAME_BYTES} bytes; closing connection")
+                    break
                 if not line:
                     break
                 line_str = line.decode("utf-8").strip()
@@ -604,8 +635,16 @@ class ClaudeClient:
                     frame_type = payload.get("type")
 
                     if frame_type == "auth":
+                        if not self._auth_token_valid(payload):
+                            logger.warning("Inbound peer sent an invalid auth token; closing connection")
+                            break
+                        authenticated = True
                         logger.info("Inbound peer authenticated successfully.")
                         continue
+
+                    if self.require_auth and not authenticated:
+                        logger.warning("Inbound frame before authentication; closing connection")
+                        break
 
                     msg_id = payload.get("msg_id", f"inbound_{uuid.uuid4()}")
 
@@ -616,6 +655,7 @@ class ClaudeClient:
                         content_val = payload.get("content", str(msg_obj))
 
                     sender = payload.get("sender")
+                    from_mode = None
                     wrapper_match = re.match(
                         r'^<cross-session-message\s+([^>]*)>\n(.*)\n</cross-session-message>$',
                         content_val, re.DOTALL
@@ -625,17 +665,31 @@ class ClaudeClient:
                         if sender is None:
                             name_match = re.search(r'from-name="([^"]*)"', attrs)
                             sender = name_match.group(1) if name_match else payload.get("from", "unknown")
+                        mode_match = re.search(r'from-mode="([^"]*)"', attrs)
+                        from_mode = mode_match.group(1) if mode_match else None
                         content_val = inner_text
                     if sender is None:
                         sender = payload.get("from", "unknown")
 
+                    claimed_sender = sender
+                    sender_verified = peer_session is not None
+                    if sender_verified:
+                        sender = peer_session["name"]
+
                     now = time.time()
+                    provenance = {
+                        "claimed_sender": claimed_sender,
+                        "sender_verified": sender_verified,
+                        "peer_pid": peer_pid,
+                        "from_mode": from_mode,
+                    }
                     event = {
                         "msg_id": msg_id,
                         "sender": sender,
                         "content": content_val,
                         "timestamp": now,
-                        "payload": payload
+                        "payload": payload,
+                        **provenance,
                     }
 
                     self.response_store[msg_id] = {
@@ -645,7 +699,8 @@ class ClaudeClient:
                         "sender": sender,
                         "content": content_val,
                         "payload": payload,
-                        "timestamp": now
+                        "timestamp": now,
+                        **provenance,
                     }
                     logger.info(f"Buffered inbound response frame: {msg_id}")
 
@@ -769,10 +824,11 @@ class ClaudeClient:
 
         try:
             server = await asyncio.start_unix_server(
-                self.handle_inbound_client, self.bridge_socket_path
+                self.handle_inbound_client, self.bridge_socket_path, limit=self.MAX_FRAME_BYTES
             )
             os.chmod(self.bridge_socket_path, stat.S_IRUSR | stat.S_IWUSR)
             logger.info(f"Bridge server operational on: {self.bridge_socket_path}")
+            self._listening = True
 
             async with server:
                 await server.serve_forever()
@@ -780,6 +836,8 @@ class ClaudeClient:
             pass
         except Exception as e:
             logger.error(f"Bridge listener server error: {e}")
+        finally:
+            self._listening = False
 
     start_listener = start_bridge_listener
 

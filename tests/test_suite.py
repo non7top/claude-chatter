@@ -28,6 +28,7 @@ sys.path.insert(0, _repo_dir)
 _curr_pythonpath = os.environ.get("PYTHONPATH", "")
 os.environ["PYTHONPATH"] = f"{_repo_dir}:{_curr_pythonpath}" if _curr_pythonpath else _repo_dir
 from claude_chatter import (
+    AmbiguousSessionError,
     ClaudeClient,
     ClaudeMessagingProtocol,
     ClaudeWire,
@@ -1291,6 +1292,8 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         os.environ["CHATTER_DB_PATH"] = self.db_path
         self.socket_path = os.path.join(self.tmp_dir.name, "test_ipc.sock")
         self.bridge = ClaudeMessagingProtocol(bridge_socket_path=self.socket_path, db_path=self.db_path)
+        self.bridge.sessions_dir = os.path.join(self.tmp_dir.name, "sessions")
+        os.makedirs(self.bridge.sessions_dir)
 
     async def asyncTearDown(self):
         self.bridge.cleanup_session_descriptor()
@@ -1300,6 +1303,193 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         else:
             os.environ.pop("CHATTER_DB_PATH", None)
         self.tmp_dir.cleanup()
+
+    def _register_session(self, pid, name):
+        with open(os.path.join(self.bridge.sessions_dir, f"{pid}.json"), "w", encoding="utf-8") as f:
+            json.dump({"pid": pid, "name": name, "messagingSocketPath": "/sock/x", "sessionId": f"sid-{pid}"}, f)
+
+    @staticmethod
+    def _claiming_frame(msg_id, claimed, from_mode=None):
+        content = "hi"
+        if from_mode:
+            content = (f'<cross-session-message from="uds:/claimed" from-name="{claimed}" '
+                       f'from-mode="{from_mode}">\nhi\n</cross-session-message>')
+        return {"msgV": 1, "msg_id": msg_id, "type": "user",
+                "message": {"role": "user", "content": content}, "sender": claimed}
+
+    async def _listen_and_post(self, frame):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        reader, writer = await asyncio.open_unix_connection(self.socket_path)
+        writer.write((json.dumps(frame) + "\n").encode("utf-8"))
+        await writer.drain()
+        await asyncio.sleep(0.3)
+        writer.close()
+        await writer.wait_closed()
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    async def _exchange(self, bridge, lines):
+        """Sends all lines on one connection to a freshly started listener of `bridge`."""
+        server_task = asyncio.create_task(bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        reader, writer = await asyncio.open_unix_connection(bridge.bridge_socket_path)
+        try:
+            for line in lines:
+                writer.write((json.dumps(line) + "\n").encode("utf-8"))
+            await writer.drain()
+            await asyncio.sleep(0.3)
+            writer.close()
+            await writer.wait_closed()
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    def _strict_bridge(self, name):
+        bridge = ClaudeClient(
+            bridge_socket_path=os.path.join(self.tmp_dir.name, f"{name}.sock"),
+            session_name=name,
+            enable_storage=False,
+            as_bridge=False,
+            require_auth=True,
+        )
+        bridge.sessions_dir = self.bridge.sessions_dir
+        bridge.registered_token = "strict-token"
+        return bridge
+
+    async def test_auth_line_with_the_registered_token_is_accepted(self):
+        self.bridge.register_session_descriptor(session_name="auth-ok")
+        token = self.bridge.registered_token
+
+        await self._exchange(self.bridge, [
+            {"type": "auth", "token": token}, self._claiming_frame("a1", "peer"),
+        ])
+
+        self.assertIn("a1", self.bridge.response_store)
+
+    async def test_auth_line_may_use_the_peer_token_key(self):
+        self.bridge.register_session_descriptor(session_name="auth-key")
+        token = self.bridge.registered_token
+
+        await self._exchange(self.bridge, [
+            {"type": "auth", "peerToken": token}, self._claiming_frame("a2", "peer"),
+        ])
+
+        self.assertIn("a2", self.bridge.response_store)
+
+    async def test_auth_line_with_a_wrong_token_closes_the_connection_without_delivery(self):
+        self.bridge.register_session_descriptor(session_name="auth-bad")
+
+        await self._exchange(self.bridge, [
+            {"type": "auth", "token": "WRONG"}, self._claiming_frame("a3", "peer"),
+        ])
+
+        self.assertNotIn("a3", self.bridge.response_store)
+
+    async def test_connection_without_auth_line_is_accepted_by_default(self):
+        self.bridge.register_session_descriptor(session_name="auth-opt")
+
+        await self._exchange(self.bridge, [self._claiming_frame("a4", "peer")])
+
+        self.assertIn("a4", self.bridge.response_store)
+
+    async def test_require_auth_rejects_a_connection_without_auth_line(self):
+        strict = self._strict_bridge("strict-none")
+
+        await self._exchange(strict, [self._claiming_frame("a5", "peer")])
+
+        self.assertNotIn("a5", strict.response_store)
+
+    async def test_require_auth_rejects_a_frame_sent_before_the_auth_line(self):
+        strict = self._strict_bridge("strict-late")
+
+        await self._exchange(strict, [
+            self._claiming_frame("a6", "peer"), {"type": "auth", "token": "strict-token"},
+        ])
+
+        self.assertNotIn("a6", strict.response_store)
+
+    async def test_require_auth_accepts_a_valid_auth_line_first(self):
+        strict = self._strict_bridge("strict-ok")
+
+        await self._exchange(strict, [
+            {"type": "auth", "token": "strict-token"}, self._claiming_frame("a7", "peer"),
+        ])
+
+        self.assertIn("a7", strict.response_store)
+
+    async def test_require_auth_without_a_registered_token_refuses_everything(self):
+        strict = self._strict_bridge("strict-notoken")
+        strict.registered_token = None
+
+        await self._exchange(strict, [
+            {"type": "auth", "token": "anything"}, self._claiming_frame("a8", "peer"),
+        ])
+
+        self.assertNotIn("a8", strict.response_store)
+
+    async def test_sender_without_matching_session_is_marked_unverified(self):
+        await self._listen_and_post(self._claiming_frame("m1", "spoof"))
+
+        entry = self.bridge.response_store["m1"]
+        self.assertEqual(entry["sender"], "spoof")
+        self.assertEqual(entry["claimed_sender"], "spoof")
+        self.assertFalse(entry["sender_verified"])
+        self.assertEqual(entry["peer_pid"], os.getpid())
+
+    async def test_sender_is_the_session_owning_the_connecting_pid(self):
+        self._register_session(os.getpid(), "real-session")
+
+        await self._listen_and_post(self._claiming_frame("m2", "spoof"))
+
+        entry = self.bridge.response_store["m2"]
+        self.assertEqual(entry["sender"], "real-session")
+        self.assertEqual(entry["claimed_sender"], "spoof")
+        self.assertTrue(entry["sender_verified"])
+
+    async def test_sender_is_the_session_whose_child_process_connected(self):
+        self._register_session(os.getpid(), "real-session")
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        code = (
+            "import json, socket, sys, time\n"
+            "s = socket.socket(socket.AF_UNIX)\n"
+            "s.connect(sys.argv[1])\n"
+            "frame = {'msg_id': 'm3', 'type': 'user', 'sender': 'spoof',\n"
+            "         'message': {'role': 'user', 'content': 'hi'}}\n"
+            "s.sendall((json.dumps(frame) + '\\n').encode())\n"
+            "time.sleep(0.5)\n"
+        )
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", code, self.socket_path)
+        await proc.wait()
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+        entry = self.bridge.response_store["m3"]
+        self.assertEqual(entry["sender"], "real-session")
+        self.assertTrue(entry["sender_verified"])
+        self.assertNotEqual(entry["peer_pid"], os.getpid())
+
+    async def test_wrapper_from_mode_is_recorded(self):
+        await self._listen_and_post(self._claiming_frame("m4", "someone", from_mode="bypass"))
+        await asyncio.sleep(0)
+
+        self.assertEqual(self.bridge.response_store["m4"]["from_mode"], "bypass")
+
+    async def test_from_mode_is_none_without_a_wrapper(self):
+        await self._listen_and_post(self._claiming_frame("m5", "someone"))
+
+        self.assertIsNone(self.bridge.response_store["m5"]["from_mode"])
 
     async def test_inbound_listener_and_buffering(self):
         """Verify inbound Unix socket listener receives and buffers peer frames."""
@@ -1386,6 +1576,120 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+    async def _post_frames(self, frames):
+        """Sends each frame on its own connection, tolerating the server dropping an oversized one."""
+        for frame in frames:
+            reader, writer = await asyncio.open_unix_connection(self.socket_path)
+            try:
+                writer.write((json.dumps(frame) + "\n").encode("utf-8"))
+                await writer.drain()
+                await asyncio.sleep(0.3)
+                writer.close()
+                await writer.wait_closed()
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+
+    @staticmethod
+    def _frame(msg_id, size):
+        return {"msgV": 1, "msg_id": msg_id, "type": "user",
+                "message": {"role": "user", "content": "x" * size}}
+
+    async def test_inbound_frames_above_64kib_are_stored_whole(self):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+
+        await self._post_frames([self._frame("big-100k", 100_000), self._frame("big-900k", 900_000)])
+
+        self.assertEqual(len(self.bridge.response_store["big-100k"]["content"]), 100_000)
+        self.assertEqual(len(self.bridge.response_store["big-900k"]["content"]), 900_000)
+
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_frame_over_the_cap_is_dropped_and_listener_keeps_serving(self):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+
+        await self._post_frames([
+            self._frame("too-big", ClaudeClient.MAX_FRAME_BYTES + 1000),
+            self._frame("after", 100),
+        ])
+
+        self.assertNotIn("too-big", self.bridge.response_store)
+        self.assertIn("after", self.bridge.response_store)
+
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    async def _send_and_capture_frame(self):
+        mock_sock_path = os.path.join(self.tmp_dir.name, "capture_target.sock")
+        received = []
+
+        async def handler(reader, writer):
+            line = await reader.readline()
+            if line:
+                received.append(json.loads(line.decode("utf-8")))
+            writer.close()
+
+        mock_server = await asyncio.start_unix_server(handler, mock_sock_path)
+        self.bridge.active_peers = {
+            "capture-peer": {"name": "capture-peer", "pid": 88889, "sessionId": "sid", "socket": mock_sock_path}
+        }
+
+        async def bypass_verify():
+            return self.bridge.active_peers
+        self.bridge.verify_and_purge_sessions = bypass_verify
+
+        res = await self.bridge.send_message("capture-peer", "hello")
+        await asyncio.sleep(0.05)
+        mock_server.close()
+        await mock_server.wait_closed()
+        self.assertTrue(res["success"])
+        return received[0]
+
+    async def test_send_without_listener_carries_no_reply_address(self):
+        frame = await self._send_and_capture_frame()
+
+        self.assertNotIn("from", frame)
+        content = frame["message"]["content"]
+        self.assertNotIn(' from="', content)
+        self.assertIn('from-name="', content)
+
+    async def test_send_while_listening_carries_the_bound_socket_as_reply_address(self):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+
+        frame = await self._send_and_capture_frame()
+
+        expected = f"uds:{self.socket_path}"
+        self.assertEqual(frame["from"], expected)
+        self.assertIn(f'from="{expected}"', frame["message"]["content"])
+
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_reply_address_is_dropped_once_the_listener_stops(self):
+        server_task = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
+
+        frame = await self._send_and_capture_frame()
+
+        self.assertNotIn("from", frame)
+
     async def test_outbound_send_to_mock_peer(self):
         """Verify outbound frame formatting and delivery over target Unix domain socket."""
         mock_sock_path = os.path.join(self.tmp_dir.name, "mock_target.sock")
@@ -1424,7 +1728,6 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(received_frames), 1)
         self.assertEqual(received_frames[0]["type"], "user")
         self.assertEqual(received_frames[0]["msgV"], 1)
-        self.assertTrue(received_frames[0]["from"].startswith("uds:"))
         content = received_frames[0]["message"]["content"]
         self.assertIn('from-name="', content)
         self.assertIn("Hello Mock Peer!", content)
@@ -1433,7 +1736,9 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         await mock_server.wait_closed()
 
 
-class TestDuplicateSessionNames(unittest.IsolatedAsyncioTestCase):
+class PeerDirTestCase(unittest.IsolatedAsyncioTestCase):
+    """Sessions dir with two live dummy processes and unix-socket listeners standing in for peers."""
+
     async def asyncSetUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.sessions_dir = os.path.join(self.tmp_dir.name, "sessions")
@@ -1458,10 +1763,13 @@ class TestDuplicateSessionNames(unittest.IsolatedAsyncioTestCase):
             proc.wait()
         self.tmp_dir.cleanup()
 
-    def _descriptor(self, filename, pid, name, sock):
+    def _descriptor(self, filename, pid, name, sock, domain=None):
         path = os.path.join(self.sessions_dir, filename)
+        data = {"pid": pid, "name": name, "messagingSocketPath": sock, "sessionId": f"sid-{pid}"}
+        if domain:
+            data["pidDomain"] = domain
         with open(path, "w", encoding="utf-8") as f:
-            json.dump({"pid": pid, "name": name, "messagingSocketPath": sock, "sessionId": f"sid-{pid}"}, f)
+            json.dump(data, f)
         return path
 
     async def _listen(self, name, received):
@@ -1476,6 +1784,8 @@ class TestDuplicateSessionNames(unittest.IsolatedAsyncioTestCase):
         self.servers.append(await asyncio.start_unix_server(handler, sock))
         return sock
 
+
+class TestDuplicateSessionNames(PeerDirTestCase):
     async def test_scan_keeps_every_live_session_sharing_a_name(self):
         self._descriptor(f"{self.pid_a}.json", self.pid_a, "worker", "/sock/a")
         self._descriptor(f"{self.pid_b}.json", self.pid_b, "worker", "/sock/b")
@@ -1561,6 +1871,108 @@ class TestDuplicateSessionNames(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res["success"])
         self.assertEqual(len(received_a), 1)
         self.assertEqual(received_b, [])
+
+
+class TestTargetResolution(PeerDirTestCase):
+    def _peers(self, *names):
+        self.client.active_peers = ClaudeWire.index_peers(
+            {"name": n, "pid": 1000 + i, "sessionId": f"sid-{i}", "socket": f"/sock/{n}"}
+            for i, n in enumerate(names)
+        )
+
+    async def test_exact_name_wins_over_longer_names_containing_it(self):
+        self._peers("api-worker", "api")
+
+        self.assertEqual(self.client._resolve_session("api")["name"], "api")
+
+    async def test_unique_partial_name_resolves_case_insensitively(self):
+        self._peers("api-worker", "db")
+
+        self.assertEqual(self.client._resolve_session("WORK")["name"], "api-worker")
+
+    async def test_ambiguous_partial_name_raises_with_all_candidates(self):
+        self._peers("api-worker", "rapid-db", "other")
+
+        with self.assertRaises(AmbiguousSessionError) as ctx:
+            self.client._resolve_session("api")
+
+        self.assertEqual({c["name"] for c in ctx.exception.candidates}, {"api-worker", "rapid-db"})
+
+    async def test_catch_all_aliases_do_not_pick_a_session(self):
+        self._peers("api-worker", "rapid-db")
+
+        for alias in ("any", "first", "default", "active"):
+            self.assertIsNone(self.client._resolve_session(alias), alias)
+
+    async def test_send_to_ambiguous_partial_name_delivers_nothing(self):
+        received_a, received_b = [], []
+        sock_a = await self._listen("a", received_a)
+        sock_b = await self._listen("b", received_b)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "api-worker", sock_a)
+        self._descriptor(f"{self.pid_b}.json", self.pid_b, "rapid-db", sock_b)
+
+        res = await self.client.send_message("api", "which one?")
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(res["success"])
+        self.assertEqual({c["name"] for c in res["candidates"]}, {"api-worker", "rapid-db"})
+        self.assertEqual(received_a, [])
+        self.assertEqual(received_b, [])
+
+    async def test_send_to_any_alias_delivers_nothing(self):
+        received = []
+        sock = await self._listen("a", received)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "api-worker", sock)
+
+        res = await self.client.send_message("any", "to whoever")
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(res["success"])
+        self.assertEqual(received, [])
+
+
+class TestPidDomainFiltering(PeerDirTestCase):
+    FOREIGN = "linux:0123456789abcdef0123456789abcdef:pid:[4026539999]"
+
+    async def test_purge_keeps_foreign_domain_descriptor_with_unknown_pid(self):
+        path = self._descriptor("999999.json", 999999, "elsewhere", "/sock/e", domain=self.FOREIGN)
+
+        peers = await self.client.verify_and_purge_sessions()
+
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(peers, {})
+
+    async def test_foreign_domain_descriptor_is_not_listed_even_if_the_pid_exists_locally(self):
+        path = self._descriptor(f"{self.pid_a}.json", self.pid_a, "elsewhere", "/sock/e", domain=self.FOREIGN)
+
+        self.assertEqual(ClaudeWire.scan_sessions(self.sessions_dir), {})
+        self.assertEqual(await self.client.verify_and_purge_sessions(), {})
+        self.assertTrue(os.path.exists(path))
+
+    async def test_local_domain_dead_session_is_still_purged(self):
+        local = ClaudeWire.compute_pid_domain(os.getpid())
+        path = self._descriptor("999999.json", 999999, "gone", "/sock/g", domain=local)
+
+        await self.client.verify_and_purge_sessions()
+
+        self.assertFalse(os.path.exists(path))
+
+    async def test_local_domain_live_session_is_listed(self):
+        local = ClaudeWire.compute_pid_domain(os.getpid())
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "here", "/sock/h", domain=local)
+
+        self.assertEqual(list(ClaudeWire.scan_sessions(self.sessions_dir)), ["here"])
+
+    async def test_send_to_foreign_domain_session_delivers_nothing(self):
+        received = []
+        sock = await self._listen("e", received)
+        self._descriptor(f"{self.pid_a}.json", self.pid_a, "elsewhere", sock, domain=self.FOREIGN)
+
+        res = await self.client.send_message("elsewhere", "hello?")
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(res["success"])
+        self.assertEqual(received, [])
 
 
 class TestCoreCLI(unittest.TestCase):
