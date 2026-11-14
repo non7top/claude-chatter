@@ -201,6 +201,7 @@ class MessageStore:
             sys.stderr.write(f"Warning: Failed to initialize SQLite store at {self.db_path}: {e}\n")
             self._disabled = True
             self.last_error = str(e)
+            self.close()
 
     def _get_connection(self) -> sqlite3.Connection:
         if self._conn is None:

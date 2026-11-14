@@ -18,6 +18,7 @@ import hashlib
 import secrets
 import asyncio
 import inspect
+import contextlib
 import logging
 from typing import Any, Callable, Dict, Optional, Set
 
@@ -190,7 +191,7 @@ class ClaudeClient:
         if os.path.exists(db):
             try:
                 uri = f"file:{os.path.abspath(db)}?mode=ro"
-                with sqlite3.connect(uri, uri=True, timeout=2.0) as conn:
+                with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as conn:
                     cur = conn.execute(
                         "SELECT current_name FROM sessions WHERE cwd_digest = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1",
                         (digest,)

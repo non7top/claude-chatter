@@ -1105,6 +1105,45 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
             if os.path.exists(name_file):
                 os.remove(name_file)
 
+    async def test_failed_init_releases_the_connection(self):
+        from claude_chatter.storage import MessageStore
+
+        with mock.patch("claude_chatter.storage.SCHEMA_STATEMENTS", ["CREATE TABLE messages (invalid syntax...)"]):
+            store = MessageStore(self.db_path)
+        self.assertTrue(store.is_disabled())
+        self.assertIsNone(store._conn)
+
+    async def test_resolve_session_name_closes_its_db_connection(self):
+        import sqlite3
+        from claude_chatter.storage import MessageStore
+
+        store = MessageStore(self.db_path)
+        store.ensure_session("closing-check", cwd_digest="d" * 16)
+        store.close()
+
+        opened = []
+        real_connect = sqlite3.connect
+
+        class TrackedConnection(sqlite3.Connection):
+            closed = False
+
+            def close(self):
+                self.closed = True
+                super().close()
+
+        def tracking_connect(*args, **kwargs):
+            kwargs["factory"] = TrackedConnection
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        work_dir = os.path.join(self.tmp_dir.name, "close-check-proj")
+        os.makedirs(work_dir, exist_ok=True)
+        with mock.patch("sqlite3.connect", tracking_connect):
+            ClaudeMessagingProtocol.resolve_session_name(project_path=work_dir, db_path=self.db_path)
+        self.assertTrue(opened)
+        self.assertTrue(all(c.closed for c in opened))
+
     async def test_alias_reuse_does_not_adopt_stranger_history(self):
         from claude_chatter.storage import MessageStore
         store = MessageStore(self.db_path)
