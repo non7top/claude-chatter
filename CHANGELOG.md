@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/non7top/claude-chatter/compare/v0.2.1...v0.2.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **discovery:** keep sessions that share a name and refuse ambiguous sends ([a560d7b](https://github.com/non7top/claude-chatter/commit/a560d7b994d10974248d4158fd4d230550eaeb87))
+* **discovery:** keep sessions that share a name and refuse ambiguous sends ([4255fb4](https://github.com/non7top/claude-chatter/commit/4255fb44bf3b83dcd3fb07bf90d52e700275b8bb))
+
 ## [0.2.1](https://github.com/non7top/claude-chatter/compare/v0.2.0...v0.2.1) (2026-11-13)
 
 
