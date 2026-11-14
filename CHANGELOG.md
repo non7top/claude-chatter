@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0](https://github.com/non7top/claude-chatter/compare/v0.2.2...v0.3.0) (2026-11-14)
+
+
+### Features
+
+* **client:** subscribe to another session going idle with notify_when_idle ([354f148](https://github.com/non7top/claude-chatter/commit/354f1484be50c7b5bd6c269a3f65837252276853))
+* **client:** subscribe to another session going idle with notify_when_idle ([bfdb902](https://github.com/non7top/claude-chatter/commit/bfdb9023ae9f9d431da28b0207cf0c2db7bc34a3))
+* **send:** open outbound connections with the target's auth line ([160b6a2](https://github.com/non7top/claude-chatter/commit/160b6a2201dec67926c8d7c14ab78a014d469351))
+
+
+### Bug Fixes
+
+* **client:** keep the inbound copy of a message a session sends to itself ([61db555](https://github.com/non7top/claude-chatter/commit/61db5555ac9e38203d8b52494be57571ac1f443f))
+* **client:** keep the inbound copy of a message a session sends to itself ([9391ca2](https://github.com/non7top/claude-chatter/commit/9391ca25ec0fa705cb675f12085726c1dcb128a3))
+* **discovery:** name the key file by the socket path hash like Claude Code does ([6311c61](https://github.com/non7top/claude-chatter/commit/6311c6148f6d5fb54bb44098487a21d0db12426b))
+* **send:** refuse a message over the frame limit instead of sending it ([59b1edd](https://github.com/non7top/claude-chatter/commit/59b1eddc80fc5eba2c3389c4c29ceebe6ae5b4e9))
+* **send:** refuse a message over the frame limit instead of sending it ([1475516](https://github.com/non7top/claude-chatter/commit/1475516f02d49e1d636782e7439b730f05a48605))
+* **storage:** close SQLite connections that were left to the garbage collector ([6c7ca38](https://github.com/non7top/claude-chatter/commit/6c7ca38ddc1567cfce1f25ca40aad4ac4e609a83))
+
 ## [0.2.2](https://github.com/non7top/claude-chatter/compare/v0.2.1...v0.2.2) (2026-11-13)
 
 
