@@ -113,17 +113,22 @@ class TestBridgeSessionManagement(unittest.IsolatedAsyncioTestCase):
         digest = hashlib.sha1(project_path.encode("utf-8")).hexdigest()[:8]
         return os.path.expanduser(f"~/.claude/chatter-session-names/{digest}.name")
 
+    def _client(self, **kwargs):
+        client = ClaudeMessagingProtocol(**kwargs)
+        self.addCleanup(client.store.close)
+        return client
+
     async def test_default_name_is_basename_plus_two_random_chars_and_persisted(self):
         workspace = tempfile.mkdtemp(prefix="persist_name_test_")
         old_cwd = os.getcwd()
         os.chdir(workspace)
         try:
-            first = ClaudeMessagingProtocol(bridge_socket_path=os.path.join(self.tmp_dir.name, "p1.sock"))
+            first = self._client(bridge_socket_path=os.path.join(self.tmp_dir.name, "p1.sock"))
             self.assertRegex(first.session_name, rf"^{re.escape(os.path.basename(workspace))}-[a-z0-9]{{2}}$")
             with open(self._name_file(workspace), "r", encoding="utf-8") as f:
                 self.assertEqual(f.read(), first.session_name)
 
-            second = ClaudeMessagingProtocol(bridge_socket_path=os.path.join(self.tmp_dir.name, "p2.sock"))
+            second = self._client(bridge_socket_path=os.path.join(self.tmp_dir.name, "p2.sock"))
             self.assertEqual(second.session_name, first.session_name)
         finally:
             os.chdir(old_cwd)
@@ -135,9 +140,9 @@ class TestBridgeSessionManagement(unittest.IsolatedAsyncioTestCase):
         old_cwd = os.getcwd()
         os.chdir(workspace)
         try:
-            first = ClaudeMessagingProtocol(bridge_socket_path=os.path.join(self.tmp_dir.name, "p1.sock"))
+            first = self._client(bridge_socket_path=os.path.join(self.tmp_dir.name, "p1.sock"))
             first.persist_default_session_name("gwen")
-            second = ClaudeMessagingProtocol(bridge_socket_path=os.path.join(self.tmp_dir.name, "p2.sock"))
+            second = self._client(bridge_socket_path=os.path.join(self.tmp_dir.name, "p2.sock"))
             self.assertEqual(second.session_name, "gwen")
         finally:
             os.chdir(old_cwd)
@@ -148,7 +153,7 @@ class TestBridgeSessionManagement(unittest.IsolatedAsyncioTestCase):
         project = tempfile.mkdtemp(prefix="project_")
         try:
             with mock.patch.dict(os.environ, {"CHATTER_PROJECT_PATH": project}):
-                protocol = ClaudeMessagingProtocol(bridge_socket_path=os.path.join(self.tmp_dir.name, "a.sock"))
+                protocol = self._client(bridge_socket_path=os.path.join(self.tmp_dir.name, "a.sock"))
             self.assertRegex(protocol.session_name, rf"^{re.escape(os.path.basename(project))}-[a-z0-9]{{2}}$")
             self.assertTrue(os.path.exists(self._name_file(project)))
         finally:
@@ -164,11 +169,11 @@ class TestBridgeSessionManagement(unittest.IsolatedAsyncioTestCase):
         other = subprocess.Popen(["sleep", "30"])
         other_json = os.path.join(sessions_dir, f"{other.pid}.clash-test.json")
         try:
-            first = ClaudeMessagingProtocol(bridge_socket_path=os.path.join(self.tmp_dir.name, "c1.sock"))
+            first = self._client(bridge_socket_path=os.path.join(self.tmp_dir.name, "c1.sock"))
             stored = first.session_name
             with open(other_json, "w", encoding="utf-8") as f:
                 json.dump({"pid": other.pid, "name": stored}, f)
-            clashing = ClaudeMessagingProtocol(bridge_socket_path=os.path.join(self.tmp_dir.name, "c2.sock"))
+            clashing = self._client(bridge_socket_path=os.path.join(self.tmp_dir.name, "c2.sock"))
             self.assertNotEqual(clashing.session_name, stored)
             with open(self._name_file(workspace), "r", encoding="utf-8") as f:
                 self.assertEqual(f.read(), stored)
@@ -2060,7 +2065,7 @@ class TestCoreCLI(unittest.TestCase):
         finally:
             if proc.poll() is None:
                 proc.kill()
-                proc.wait()
+                proc.communicate()
             if os.path.exists(socket_path):
                 try:
                     os.remove(socket_path)
@@ -2101,7 +2106,7 @@ class TestCoreCLI(unittest.TestCase):
 
         finally:
             proc.terminate()
-            proc.wait(timeout=3)
+            proc.communicate(timeout=3)
             if os.path.exists(socket_path):
                 try:
                     os.remove(socket_path)
