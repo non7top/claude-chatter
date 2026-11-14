@@ -61,6 +61,8 @@ An inbound `{"type":"auth","token":"..."}` line (`peerToken` is accepted as the 
 
 On send, when the target's key file provides a token, the connection opens with `{"type":"auth","token":"..."}` before the message frame. A Claude Code session (checked on Linux, 2.1.325) delivers a message whether or not the line is present and whatever token it carries.
 
+`await client.notify_when_idle(target, timeout=None)` subscribes to a one-shot notice for when a Claude Code session next goes idle (Claude Code v2.1.236 or later, same machine) and returns it as `{"success": True, "notice": {...}}`. The notice is sent to this client's reply socket, so a listener must be bound (`start_bridge_listener`); without one the call fails. Control frames other than the idle notice are logged and not stored as messages.
+
 `event["sender"]` is the live session that owns the connecting process (or an ancestor of it) when one can be found, with `event["sender_verified"] = True`. Otherwise it is the name the frame claims and `sender_verified` is `False`. `claimed_sender`, `peer_pid` and the wrapper's `from_mode` are always included. Peer lookup needs Linux (`SO_PEERCRED`) and a sender that is still running when the connection is accepted.
 
 ### CLI Tool

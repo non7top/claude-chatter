@@ -1810,6 +1810,114 @@ class TestBridgeIPCCommunication(unittest.IsolatedAsyncioTestCase):
         mock_server.close()
         await mock_server.wait_closed()
 
+    async def _idle_peer(self, notify=True, token="peer-token"):
+        """A mock peer that answers a notify_when_idle frame with a peer_idle_notice on the sender's reply socket."""
+        sock_path = os.path.join(self.tmp_dir.name, "idle_peer.sock")
+        received = []
+
+        async def push_notice(frame):
+            reader, writer = await asyncio.open_unix_connection(self.socket_path)
+            lines = [
+                {"type": "auth", "token": self.bridge.registered_token or "x"},
+                {"type": "control", "action": "peer_idle_notice", "orig_msg_id": frame["msg_id"],
+                 "state": "idle", "finished_at": 1794673624930, "from": f"uds:{sock_path}",
+                 "from_mode": "prompting", "msgV": 1, "msg_id": str(uuid.uuid4())},
+            ]
+            for line in lines:
+                writer.write((json.dumps(line) + "\n").encode("utf-8"))
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        async def handler(reader, writer):
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                frame = json.loads(line.decode("utf-8"))
+                received.append(frame)
+                if notify and frame.get("action") == "notify_when_idle":
+                    asyncio.ensure_future(push_notice(frame))
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handler, sock_path)
+        self.bridge.active_peers = {
+            "idle-peer": {"name": "idle-peer", "pid": 88888, "sessionId": "idle-session",
+                          "socket": sock_path, "token": token, "cwd": "/tmp"}
+        }
+
+        async def bypass_verify():
+            return self.bridge.active_peers
+        self.bridge.verify_and_purge_sessions = bypass_verify
+        return server, received
+
+    async def test_notify_when_idle_returns_the_peers_idle_notice(self):
+        server, received = await self._idle_peer()
+        self.bridge.register_session_descriptor(session_name=self.bridge.session_name)
+        listener = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        try:
+            res = await self.bridge.notify_when_idle("idle-peer", timeout=5)
+        finally:
+            listener.cancel()
+            try:
+                await listener
+            except asyncio.CancelledError:
+                pass
+            server.close()
+            await server.wait_closed()
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["target"], "idle-peer")
+        self.assertEqual(res["notice"]["action"], "peer_idle_notice")
+        self.assertEqual(res["notice"]["state"], "idle")
+        self.assertEqual(res["notice"]["finished_at"], 1794673624930)
+
+        self.assertEqual([f["type"] for f in received], ["auth", "control"])
+        self.assertEqual(received[0]["token"], "peer-token")
+        subscribe = received[1]
+        self.assertEqual(subscribe["action"], "notify_when_idle")
+        self.assertEqual(subscribe["from"], f"uds:{self.socket_path}")
+        self.assertEqual(subscribe["msg_id"], res["msg_id"])
+        self.assertEqual(self.bridge.get_unread_messages(mark_read=False), {})
+
+    async def test_notify_when_idle_needs_a_bound_listener(self):
+        server, received = await self._idle_peer()
+        try:
+            res = await self.bridge.notify_when_idle("idle-peer", timeout=1)
+        finally:
+            server.close()
+            await server.wait_closed()
+        self.assertFalse(res["success"])
+        self.assertIn("listener", res["error"])
+        self.assertEqual(received, [])
+
+    async def test_notify_when_idle_times_out_without_a_notice(self):
+        server, received = await self._idle_peer(notify=False)
+        self.bridge.register_session_descriptor(session_name=self.bridge.session_name)
+        listener = asyncio.create_task(self.bridge.start_bridge_listener())
+        await asyncio.sleep(0.1)
+        try:
+            res = await self.bridge.notify_when_idle("idle-peer", timeout=0.3)
+        finally:
+            listener.cancel()
+            try:
+                await listener
+            except asyncio.CancelledError:
+                pass
+            server.close()
+            await server.wait_closed()
+        self.assertFalse(res["success"])
+        self.assertIn("No idle notice", res["error"])
+        self.assertEqual(self.bridge._idle_waiters, {})
+
+    async def test_control_frames_are_not_stored_as_messages(self):
+        frame = {"type": "control", "action": "peer_message_status", "status": "delivered",
+                 "orig_msg_id": str(uuid.uuid4()), "msgV": 1, "msg_id": str(uuid.uuid4())}
+        await self._listen_and_post(frame)
+        self.assertEqual(self.bridge.get_unread_messages(mark_read=False), {})
+
     async def test_oversized_message_is_refused_before_sending(self):
         mock_sock_path = os.path.join(self.tmp_dir.name, "mock_big.sock")
         connections = []
