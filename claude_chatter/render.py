@@ -138,7 +138,7 @@ def sessions_table(peers: Dict[str, Dict[str, Any]], width: Optional[int] = None
         ("PID", lambda p: p.get("pid")),
         ("KIND", lambda p: p.get("kind"), 2),
         ("STATUS", lambda p: p.get("status")),
-        ("SESSION", lambda p: str(p.get("sessionId") or "")[:4], 3),
+        ("SID", lambda p: str(p.get("sessionId") or "")[:4], 3),
         ("UPDATED", lambda p: fmt_ago(p.get("updatedAt")), 1),
         ("CWD", lambda p: p.get("cwd")),
     ]

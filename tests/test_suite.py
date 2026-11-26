@@ -2770,7 +2770,7 @@ class TestCliSubcommandsAndTables(unittest.TestCase):
             width = max(len(line) for line in wide.split("\n")) - 3
             out = sessions_table(peers, width=width)
         header = out.split("\n")[0]
-        self.assertIn("SESSION", header)
+        self.assertIn("SID", header)
         self.assertIn("~/proj/deep", out)
         self.assertNotIn("...", out)
         self.assertTrue(all(len(line) <= width for line in out.split("\n")))
@@ -2783,7 +2783,7 @@ class TestCliSubcommandsAndTables(unittest.TestCase):
         header = out.split("\n")[0].split()
         self.assertEqual(header[0], "NAME")
         self.assertEqual(header[-1], "CWD")
-        self.assertNotIn("SESSION", header)
+        self.assertNotIn("SID", header)
         self.assertTrue(all(len(line) <= 40 for line in out.split("\n")))
 
     def test_sessions_table_rows_and_empty(self):
@@ -2793,7 +2793,7 @@ class TestCliSubcommandsAndTables(unittest.TestCase):
             "alpha": {"name": "alpha", "pid": 10, "kind": "interactive", "status": "busy", "sessionId": "", "cwd": "/w/a"},
         }
         lines = sessions_table(peers, width=100).split("\n")
-        self.assertEqual(lines[0].split(), ["NAME", "PID", "KIND", "STATUS", "SESSION", "UPDATED", "CWD"])
+        self.assertEqual(lines[0].split(), ["NAME", "PID", "KIND", "STATUS", "SID", "UPDATED", "CWD"])
         self.assertEqual(lines[1].split(), ["alpha", "10", "interactive", "busy", "-", "-", "/w/a"])
         self.assertEqual(lines[2].split(), ["zeta", "20", "bg", "idle", "abcd", "-", "/w/z"])
         self.assertEqual(sessions_table({}), "(no active sessions)")
