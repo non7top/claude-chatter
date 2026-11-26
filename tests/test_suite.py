@@ -2743,6 +2743,49 @@ class TestCliSubcommandsAndTables(unittest.TestCase):
         self.assertEqual(fmt_time("2026-11-26T10:11:12.345Z"), "2026-11-26 10:11:12")
         self.assertEqual(fmt_time(None), "-")
 
+    def test_fmt_ago_units(self):
+        from claude_chatter.render import fmt_ago
+        now = 1_700_000_000
+        self.assertEqual(fmt_ago(now - 5, now), "5s ago")
+        self.assertEqual(fmt_ago((now - 180) * 1000, now), "3m ago")
+        self.assertEqual(fmt_ago(now - 7300, now), "2h ago")
+        self.assertEqual(fmt_ago(now - 4 * 86400, now), "4d ago")
+        self.assertEqual(fmt_ago(now + 30, now), "now")
+        self.assertEqual(fmt_ago("2023-11-14T22:13:20.000Z", now), "now")
+        self.assertEqual(fmt_ago(None, now), "-")
+        self.assertEqual(fmt_ago("garbage", now), "-")
+
+    def test_sessions_table_shows_updated_as_age(self):
+        from claude_chatter.render import sessions_table
+        peers = {"a": {"name": "a", "pid": 1, "updatedAt": int((time.time() - 7300) * 1000), "cwd": "/w"}}
+        self.assertIn("2h ago", sessions_table(peers, width=100))
+
+    def test_narrow_table_shortens_home_before_dropping_columns(self):
+        from claude_chatter.render import sessions_table
+        peers = {"a": {"name": "a", "pid": 1, "kind": "bg", "status": "idle", "sessionId": "abcdef123456",
+                       "cwd": "/h/user/proj/deep"}}
+        with mock.patch.dict(os.environ, {"HOME": "/h/user"}):
+            wide = sessions_table(peers, width=200)
+            self.assertIn("/h/user/proj/deep", wide)
+            width = max(len(line) for line in wide.split("\n")) - 3
+            out = sessions_table(peers, width=width)
+        header = out.split("\n")[0]
+        self.assertIn("SESSION", header)
+        self.assertIn("~/proj/deep", out)
+        self.assertNotIn("...", out)
+        self.assertTrue(all(len(line) <= width for line in out.split("\n")))
+
+    def test_very_narrow_table_drops_ranked_columns_and_fits(self):
+        from claude_chatter.render import sessions_table
+        peers = {"a": {"name": "a", "pid": 1, "kind": "bg", "status": "idle", "sessionId": "abcdef123456",
+                       "cwd": "/some/long/working/directory/path"}}
+        out = sessions_table(peers, width=40)
+        header = out.split("\n")[0].split()
+        self.assertEqual(header[0], "NAME")
+        self.assertEqual(header[-1], "CWD")
+        self.assertNotIn("SESSION", header)
+        self.assertTrue(all(len(line) <= 40 for line in out.split("\n")))
+
     def test_sessions_table_rows_and_empty(self):
         from claude_chatter.render import sessions_table
         peers = {
@@ -2752,7 +2795,7 @@ class TestCliSubcommandsAndTables(unittest.TestCase):
         lines = sessions_table(peers, width=100).split("\n")
         self.assertEqual(lines[0].split(), ["NAME", "PID", "KIND", "STATUS", "SESSION", "UPDATED", "CWD"])
         self.assertEqual(lines[1].split(), ["alpha", "10", "interactive", "busy", "-", "-", "/w/a"])
-        self.assertEqual(lines[2].split(), ["zeta", "20", "bg", "idle", "abcdef12", "-", "/w/z"])
+        self.assertEqual(lines[2].split(), ["zeta", "20", "bg", "idle", "abcd", "-", "/w/z"])
         self.assertEqual(sessions_table({}), "(no active sessions)")
 
     def test_jobs_table_rows_and_empty(self):
