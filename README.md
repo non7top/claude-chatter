@@ -19,7 +19,7 @@ The library implements the peer messaging tools that Claude Code exposes to its 
 - `ClaudeClient.send_message(target_session, message_content, priority="next")` delivers a message to a live session over its UNIX socket. The target is resolved by name, PID, session id or a partial name match.
 - `ClaudeClient.list_sessions()` returns the live sessions found in `~/.claude/sessions`, with peer tokens redacted unless `redact_tokens=False`. `ClaudeWire.scan_sessions()` does the same without a client.
 
-Received messages are stored in the local mailbox and read with `get_unread_messages()` and `get_history()`. The CLI equivalents are `--send`, `--list`, `--inbox` and `--history`.
+Received messages are stored in the local mailbox and read with `get_unread_messages()` and `get_history()`. The CLI equivalents are the `send`, `list`, `inbox` and `history` commands.
 
 ## Quick Start
 
@@ -69,30 +69,38 @@ The other side: a bound listener remembers `notify_when_idle` subscribers (reply
 
 ### CLI Tool
 
-The package installs both `claude-chatter` and `chatter` CLI entry points:
+The package installs both `claude-chatter` and `chatter` CLI entry points. Each mode is a command; `list`, `jobs`, `inbox`, `history` and `send` print a table, or JSON with `--json`. `--socket`, `--name`, `--db` and `--project-path` go before or after the command.
 
 ```bash
 # List all active Claude Code sessions
-claude-chatter --list
+chatter list
 
 # List Claude Code background jobs
-claude-chatter --jobs
+chatter jobs
 
 # Inspect unread messages from local mailbox
-claude-chatter --inbox
+chatter inbox
 
 # View full persisted message history
-claude-chatter --history
+chatter history
 
 # Send message to a target session
-claude-chatter --send target-session "Hello peer"
+chatter send target-session "Hello peer"
+
+# Machine-readable output
+chatter list --json
 
 # Run standalone daemon socket listener
-claude-chatter --standalone --name my-daemon
+chatter standalone --name my-daemon
 
 # Proactively scan and purge dead session files
-claude-chatter --purge
+chatter purge
+
+# Without installing
+uvx --from claude-chatter chatter list
 ```
+
+The mode flags of earlier releases (`--list`, `--jobs`, `--inbox`, `--history`, `--send`, `--purge`, `--standalone`) are gone, and their JSON output is now `--json`.
 
 ## Provenance
 

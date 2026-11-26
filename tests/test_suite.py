@@ -516,7 +516,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
         try:
             cmd_inbox = [
                 sys.executable, "-m", "claude_chatter.cli",
-                "--inbox", "--db", self.db_path
+                "inbox", "--json", "--db", self.db_path
             ]
             res_inbox = subprocess.run(cmd_inbox, capture_output=True, text=True, check=True)
             data_inbox = json.loads(res_inbox.stdout)
@@ -525,7 +525,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
 
             cmd_hist = [
                 sys.executable, "-m", "claude_chatter.cli",
-                "--history", "--db", self.db_path
+                "history", "--json", "--db", self.db_path
             ]
             res_hist = subprocess.run(cmd_hist, capture_output=True, text=True, check=True)
             data_hist = json.loads(res_hist.stdout)
@@ -550,7 +550,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
 
         cmd_inbox = [
             sys.executable, "-m", "claude_chatter.cli",
-            "--inbox", "--name", self.session_name, "--db", self.db_path
+            "inbox", "--json", "--name", self.session_name, "--db", self.db_path
         ]
         res_inbox = subprocess.run(cmd_inbox, capture_output=True, text=True, check=True)
         data_inbox = json.loads(res_inbox.stdout)
@@ -558,7 +558,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
 
         cmd_hist = [
             sys.executable, "-m", "claude_chatter.cli",
-            "--history", "--name", self.session_name, "--db", self.db_path
+            "history", "--json", "--name", self.session_name, "--db", self.db_path
         ]
         res_hist = subprocess.run(cmd_hist, capture_output=True, text=True, check=True)
         data_hist = json.loads(res_hist.stdout)
@@ -596,7 +596,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
         names_dir = os.path.join(os.path.expanduser("~"), ".claude", "chatter-session-names")
         files_before = set(os.listdir(names_dir)) if os.path.exists(names_dir) else set()
 
-        cmd = [sys.executable, "-m", "claude_chatter.cli", "--inbox", "--db", self.db_path]
+        cmd = [sys.executable, "-m", "claude_chatter.cli", "inbox", "--json", "--db", self.db_path]
         res = subprocess.run(cmd, cwd=empty_dir, capture_output=True, text=True, check=True)
         self.assertEqual(res.stdout.strip(), "{}")
 
@@ -621,7 +621,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
             f.write("env-named-sess")
 
         try:
-            cmd = [sys.executable, "-m", "claude_chatter.cli", "--inbox", "--db", self.db_path]
+            cmd = [sys.executable, "-m", "claude_chatter.cli", "inbox", "--json", "--db", self.db_path]
             clean_env = os.environ.copy()
             clean_env.pop("CHATTER_SESSION_NAME", None)
             res = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, check=True, env=clean_env)
@@ -664,7 +664,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
         try:
             cmd = [
                 sys.executable, "-m", "claude_chatter.cli",
-                "--inbox", "--name", "other-external-sess", "--db", self.db_path
+                "inbox", "--json", "--name", "other-external-sess", "--db", self.db_path
             ]
             res = subprocess.run(cmd, cwd=ws_dir, capture_output=True, text=True, check=True)
             self.assertEqual(res.stdout.strip(), "{}")
@@ -725,7 +725,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(cli_proto.session_name, "holder-sess")
 
             t_cmd0 = time.time()
-            cmd = [sys.executable, "-m", "claude_chatter.cli", "--list"]
+            cmd = [sys.executable, "-m", "claude_chatter.cli", "list", "--json"]
             res = subprocess.run(cmd, capture_output=True, text=True, check=True)
             self.assertEqual(res.returncode, 0)
             t_cmd1 = time.time()
@@ -772,7 +772,7 @@ class TestMessagePersistenceAndSQLite(unittest.IsolatedAsyncioTestCase):
         if os.path.exists(wal_file):
             self.assertEqual(os.path.getsize(wal_file), 0)
 
-        cmd = [sys.executable, "-m", "claude_chatter.cli", "--inbox", "--name", "ro-sess", "--db", ro_db]
+        cmd = [sys.executable, "-m", "claude_chatter.cli", "inbox", "--json", "--name", "ro-sess", "--db", ro_db]
         res = subprocess.run(cmd, capture_output=True, text=True, check=True)
         data = json.loads(res.stdout)
         self.assertIn("m_ro_1", data)
@@ -2323,9 +2323,9 @@ class TestCoreCLI(unittest.TestCase):
         self.script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "claude_chatter", "cli.py"))
 
     def test_cli_list(self):
-        """Verify python3 cli.py --list executes and returns valid JSON."""
+        """Verify python3 cli.py list --json executes and returns valid JSON."""
         res = subprocess.run(
-            [sys.executable, self.script_path, "--list"],
+            [sys.executable, self.script_path, "list", "--json"],
             capture_output=True,
             text=True
         )
@@ -2334,9 +2334,9 @@ class TestCoreCLI(unittest.TestCase):
         self.assertIsInstance(data, dict)
 
     def test_cli_purge(self):
-        """Verify python3 cli.py --purge executes successfully."""
+        """Verify python3 cli.py purge executes successfully."""
         res = subprocess.run(
-            [sys.executable, self.script_path, "--purge"],
+            [sys.executable, self.script_path, "purge"],
             capture_output=True,
             text=True
         )
@@ -2344,10 +2344,10 @@ class TestCoreCLI(unittest.TestCase):
         self.assertIn("Purge scan completed", res.stdout)
 
     def test_cli_standalone_daemon(self):
-        """Verify python3 cli.py --standalone starts and stops gracefully on SIGTERM."""
+        """Verify python3 cli.py standalone starts and stops gracefully on SIGTERM."""
         socket_path = f"/tmp/test_standalone_{uuid.uuid4().hex[:8]}.sock"
         proc = subprocess.Popen(
-            [sys.executable, self.script_path, "--standalone", "--socket", socket_path, "--name", "test-standalone-daemon"],
+            [sys.executable, self.script_path, "standalone", "--socket", socket_path, "--name", "test-standalone-daemon"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -2372,7 +2372,7 @@ class TestCoreCLI(unittest.TestCase):
                     pass
 
     def test_cli_standalone_send(self):
-        """Verify python3 cli.py --send dispatches to a standalone daemon.
+        """Verify python3 cli.py send dispatches to a standalone daemon.
         send_message is fire-and-forget (no auto-reply scaffold, no transcript
         polling) - a real reply, if any, arrives later via a genuine send_message
         call from the target instead."""
@@ -2380,7 +2380,7 @@ class TestCoreCLI(unittest.TestCase):
         daemon_name = f"suite-daemon-{uuid.uuid4().hex[:6]}"
 
         proc = subprocess.Popen(
-            [sys.executable, self.script_path, "--standalone", "--socket", socket_path, "--name", daemon_name],
+            [sys.executable, self.script_path, "standalone", "--socket", socket_path, "--name", daemon_name],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -2390,10 +2390,10 @@ class TestCoreCLI(unittest.TestCase):
             time.sleep(1.0)
             self.assertTrue(os.path.exists(socket_path))
 
-            # Send message to the daemon using --send; dispatch should succeed
+            # Send message to the daemon using send; dispatch should succeed
             # immediately since send_message is fire-and-forget.
             res = subprocess.run(
-                [sys.executable, self.script_path, "--send", daemon_name, "hello standalone"],
+                [sys.executable, self.script_path, "send", daemon_name, "hello standalone", "--json"],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -2697,6 +2697,145 @@ class TestClientCoreOperations(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["session_name"], "new-sess")
         self.assertEqual(row["session_id"], client.session_id)
         check_store.close()
+
+
+class TestCliSubcommandsAndTables(unittest.TestCase):
+    def test_modes_are_subcommands_and_flags_are_gone(self):
+        from claude_chatter.cli import build_parser
+        parser = build_parser()
+        self.assertEqual(parser.parse_args(["list", "--json"]).command, "list")
+        self.assertEqual(parser.parse_args(["daemon"]).command, "daemon")
+        args = parser.parse_args(["send", "peer", "hello"])
+        self.assertEqual((args.session, args.message), ("peer", "hello"))
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            for legacy in ("--list", "--jobs", "--inbox", "--history", "--purge", "--standalone"):
+                with self.assertRaises(SystemExit, msg=legacy):
+                    parser.parse_args([legacy])
+
+    def test_common_options_work_before_and_after_the_command(self):
+        from claude_chatter.cli import build_parser
+        parser = build_parser()
+        before = parser.parse_args(["--name", "a", "--db", "/x.db", "inbox"])
+        after = parser.parse_args(["inbox", "--name", "a", "--db", "/x.db"])
+        self.assertEqual((before.name, before.db), ("a", "/x.db"))
+        self.assertEqual((after.name, after.db), ("a", "/x.db"))
+        self.assertIsNone(parser.parse_args(["list"]).name)
+
+    def test_table_has_aligned_columns_and_clips_the_last_one(self):
+        from claude_chatter.render import render_table
+        cols = [("A", lambda r: r[0]), ("LONGHEAD", lambda r: r[1]), ("TAIL", lambda r: r[2])]
+        out = render_table(cols, [("x", "y", "z" * 100), ("longer", None, "")], width=40)
+        lines = out.split("\n")
+        self.assertEqual(lines[0], "A       LONGHEAD  TAIL")
+        self.assertEqual(lines[1], "x       y         " + "z" * 19 + "...")
+        self.assertEqual(lines[2], "longer  -         -")
+        self.assertTrue(all(len(line) <= 40 for line in lines))
+        self.assertTrue(out.isascii())
+
+    def test_cell_text_stays_on_one_line(self):
+        from claude_chatter.render import render_table
+        out = render_table([("C", lambda r: r)], ["line one\n\tline two"], width=80)
+        self.assertEqual(out.split("\n"), ["C", "line one line two"])
+
+    def test_fmt_time_accepts_seconds_millis_and_iso(self):
+        from claude_chatter.render import fmt_time
+        self.assertEqual(fmt_time(1700000000), fmt_time(1700000000 * 1000))
+        self.assertEqual(fmt_time("2026-11-26T10:11:12.345Z"), "2026-11-26 10:11:12")
+        self.assertEqual(fmt_time(None), "-")
+
+    def test_fmt_ago_units(self):
+        from claude_chatter.render import fmt_ago
+        now = 1_700_000_000
+        self.assertEqual(fmt_ago(now - 5, now), "5s ago")
+        self.assertEqual(fmt_ago((now - 180) * 1000, now), "3m ago")
+        self.assertEqual(fmt_ago(now - 7300, now), "2h ago")
+        self.assertEqual(fmt_ago(now - 4 * 86400, now), "4d ago")
+        self.assertEqual(fmt_ago(now + 30, now), "now")
+        self.assertEqual(fmt_ago("2023-11-14T22:13:20.000Z", now), "now")
+        self.assertEqual(fmt_ago(None, now), "-")
+        self.assertEqual(fmt_ago("garbage", now), "-")
+
+    def test_sessions_table_shows_updated_as_age(self):
+        from claude_chatter.render import sessions_table
+        peers = {"a": {"name": "a", "pid": 1, "updatedAt": int((time.time() - 7300) * 1000), "cwd": "/w"}}
+        self.assertIn("2h ago", sessions_table(peers, width=100))
+
+    def test_narrow_table_shortens_home_before_dropping_columns(self):
+        from claude_chatter.render import sessions_table
+        peers = {"a": {"name": "a", "pid": 1, "kind": "bg", "status": "idle", "sessionId": "abcdef123456",
+                       "cwd": "/h/user/proj/deep"}}
+        with mock.patch.dict(os.environ, {"HOME": "/h/user"}):
+            wide = sessions_table(peers, width=200)
+            self.assertIn("/h/user/proj/deep", wide)
+            width = max(len(line) for line in wide.split("\n")) - 3
+            out = sessions_table(peers, width=width)
+        header = out.split("\n")[0]
+        self.assertIn("SID", header)
+        self.assertIn("~/proj/deep", out)
+        self.assertNotIn("...", out)
+        self.assertTrue(all(len(line) <= width for line in out.split("\n")))
+
+    def test_very_narrow_table_drops_ranked_columns_and_fits(self):
+        from claude_chatter.render import sessions_table
+        peers = {"a": {"name": "a", "pid": 1, "kind": "bg", "status": "idle", "sessionId": "abcdef123456",
+                       "cwd": "/some/long/working/directory/path"}}
+        out = sessions_table(peers, width=40)
+        header = out.split("\n")[0].split()
+        self.assertEqual(header[0], "NAME")
+        self.assertEqual(header[-1], "CWD")
+        self.assertNotIn("SID", header)
+        self.assertTrue(all(len(line) <= 40 for line in out.split("\n")))
+
+    def test_sessions_table_rows_and_empty(self):
+        from claude_chatter.render import sessions_table
+        peers = {
+            "zeta": {"name": "zeta", "pid": 20, "kind": "bg", "status": "idle", "sessionId": "abcdef123456", "cwd": "/w/z"},
+            "alpha": {"name": "alpha", "pid": 10, "kind": "interactive", "status": "busy", "sessionId": "", "cwd": "/w/a"},
+        }
+        lines = sessions_table(peers, width=100).split("\n")
+        self.assertEqual(lines[0].split(), ["NAME", "PID", "KIND", "STATUS", "SID", "UPDATED", "CWD"])
+        self.assertEqual(lines[1].split(), ["alpha", "10", "interactive", "busy", "-", "-", "/w/a"])
+        self.assertEqual(lines[2].split(), ["zeta", "20", "bg", "idle", "abcd", "-", "/w/z"])
+        self.assertEqual(sessions_table({}), "(no active sessions)")
+
+    def test_jobs_table_rows_and_empty(self):
+        from claude_chatter.render import jobs_table
+        jobs = [{"id": "j1", "name": "build", "state": "done", "running": False, "live": None, "detail": "all green"},
+                {"id": "j2", "name": "lint", "state": "working", "running": True, "live": {"pid": 77}, "detail": None}]
+        lines = jobs_table(jobs, width=100).split("\n")
+        self.assertEqual(lines[1].split(), ["j1", "build", "done", "no", "-", "-", "all", "green"])
+        self.assertEqual(lines[2].split(), ["j2", "lint", "working", "yes", "77", "-", "-"])
+        self.assertEqual(jobs_table([]), "(no jobs)")
+
+    def test_messages_table_direction_peer_and_read(self):
+        from claude_chatter.render import messages_table
+        msgs = {
+            "m1": {"direction": "inbound", "sender": "bob", "status": "received", "read": False, "content": "hi", "timestamp": 1700000000},
+            "m2": {"direction": "outbound", "target_session": "carol", "status": "dispatched", "content": "yo", "timestamp": 1700000001},
+        }
+        lines = messages_table(msgs, width=100).split("\n")
+        self.assertEqual(lines[0].split(), ["TIME", "DIR", "PEER", "STATUS", "READ", "ID", "CONTENT"])
+        self.assertEqual(lines[1].split()[2:], ["in", "bob", "received", "no", "m1", "hi"])
+        self.assertEqual(lines[2].split()[2:], ["out", "carol", "dispatched", "-", "m2", "yo"])
+        self.assertEqual(messages_table({}), "(no messages)")
+
+    def test_cli_inbox_prints_table_by_default_and_json_with_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "cli.db")
+            from claude_chatter.storage import MessageStore
+            store = MessageStore(db_path)
+            store.save_message("tbl_1", {
+                "direction": "inbound", "read": False, "sender": "bob",
+                "content": "table payload", "timestamp": time.time(),
+            }, "tbl-sess")
+            store.close()
+            base = [sys.executable, "-m", "claude_chatter.cli", "inbox", "--name", "tbl-sess", "--db", db_path]
+            table = subprocess.run(base, capture_output=True, text=True, check=True).stdout
+            self.assertEqual(table.split("\n")[0].split(), ["TIME", "DIR", "PEER", "STATUS", "READ", "ID", "CONTENT"])
+            self.assertIn("table payload", table)
+            self.assertFalse(table.lstrip().startswith("{"))
+            as_json = subprocess.run(base + ["--json"], capture_output=True, text=True, check=True).stdout
+            self.assertEqual(json.loads(as_json)["tbl_1"]["content"], "table payload")
 
 
 if __name__ == "__main__":
