@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/non7top/claude-chatter/compare/v0.4.0...v0.5.0) (2026-11-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** make modes subcommands and print tables by default
+
+### Features
+
+* **cli:** make modes subcommands and print tables by default ([116fcd1](https://github.com/non7top/claude-chatter/commit/116fcd14dbcda25d5a62e603da07d18d316cbb88))
+* **cli:** rename the SESSION column to SID so it matches its 4-character values ([a7b426e](https://github.com/non7top/claude-chatter/commit/a7b426e40738b34b6a275bb331ebe2cf4e94d764))
+* **cli:** show ages, shorten paths and drop columns on narrow terminals ([570c748](https://github.com/non7top/claude-chatter/commit/570c7482bb25a2cde89825979b75cf70e7c4e163))
+
 ## [0.4.0](https://github.com/non7top/claude-chatter/compare/v0.3.0...v0.4.0) (2026-11-14)
 
 
